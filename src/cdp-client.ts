@@ -1111,10 +1111,23 @@ export class CometCDPClient {
    * Capture screenshot
    */
   async screenshot(format: "png" | "jpeg" = "png"): Promise<ScreenshotResult> {
-    this.ensureConnected();
-    return this.client!.Page.captureScreenshot({ format }) as Promise<ScreenshotResult>;
+    await this.ensureConnected();
+    
+    try {
+      const result = await this.client!.Page.captureScreenshot({ 
+        format,
+        captureBeyondViewport: false
+      });
+      
+      if (!result || !result.data) {
+        throw new Error("Screenshot returned no data");
+      }
+      
+      return { data: result.data };
+    } catch (error) {
+      throw new Error(`Screenshot failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
-
   /**
    * Execute JavaScript in the page context
    */
