@@ -6,5 +6,6 @@ export default defineConfig({
     environmentMatchGlobs: [
       ["tests/unit/page-scripts.test.ts", "jsdom"],
     ],
+    setupFiles: ["tests/unit/jsdom-setup.ts"],
   },
 });
