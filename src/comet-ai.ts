@@ -4,6 +4,14 @@
 import { cometClient } from "./cdp-client.js";
 import { extractAgentStatus, type AgentStatusResult } from "./page-scripts.js";
 
+/**
+ * Minimal CDP-client surface used by `CometAI.getAgentStatus`. Letting
+ * callers inject a stand-in (in unit tests) avoids spinning up real
+ * CDP infrastructure to exercise the status-extraction logic. Methods
+ * outside this set continue to use the module-level `cometClient`.
+ */
+export type CometAIClient = Pick<typeof cometClient, "safeEvaluate" | "listTabsCategorized">;
+
 // Input selectors - contenteditable div is primary for Perplexity
 const INPUT_SELECTORS = [
   '[contenteditable="true"]',
@@ -14,6 +22,12 @@ const INPUT_SELECTORS = [
 ];
 
 export class CometAI {
+  private readonly client: CometAIClient;
+
+  constructor(client: CometAIClient = cometClient) {
+    this.client = client;
+  }
+
   /**
    * Find the first matching element from a list of selectors
    */
@@ -280,7 +294,7 @@ export class CometAI {
     // Get browsing URL from agent's tab
     let agentBrowsingUrl = '';
     try {
-      const tabs = await cometClient.listTabsCategorized();
+      const tabs = await this.client.listTabsCategorized();
       if (tabs.agentBrowsing) {
         agentBrowsingUrl = tabs.agentBrowsing.url;
       }
@@ -288,7 +302,7 @@ export class CometAI {
       // Continue without URL
     }
 
-    const result = await cometClient.safeEvaluate(`(${extractAgentStatus.toString()})()`);
+    const result = await this.client.safeEvaluate(`(${extractAgentStatus.toString()})()`);
 
     const statusResult = result.result.value as AgentStatusResult;
 
