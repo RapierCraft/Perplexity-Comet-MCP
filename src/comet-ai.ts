@@ -319,11 +319,20 @@ export class CometAI {
         // Check for "Thinking" indicator specifically
         const hasThinkingIndicator = body.includes('Thinking') && !body.includes('Thinking about');
 
-        const hasStepsCompleted = /\\d+ steps? completed/i.test(body);
+        // Completion markers — multilingual.
+        // Perplexity localizes its UI (ru, de, es, fr, etc). English-only patterns
+        // miss completion on non-English accounts and force fallback to slow
+        // response-stability polling (~90s). See PR notes for marker source.
+        const hasStepsCompleted = /\\d+ steps? completed/i.test(body)
+                               || /Выполнено\\s+\\d+\\s+шаг(?:а|ов)?/iu.test(body); // ru
         const hasFinishedMarker = body.includes('Finished') && !hasActiveStopButton;
         const hasReviewedSources = /Reviewed \\d+ sources?/i.test(body);
-        const hasSourcesIndicator = /\\d+\\s*sources?/i.test(body); // "10 sources" etc
-        const hasAskFollowUp = body.includes('Ask a follow-up') || body.includes('Ask follow-up');
+        const hasSourcesIndicator = /\\d+\\s*sources?/i.test(body)              // en
+                                 || /\\d+\\s*источник(?:а|ов)?/iu.test(body);    // ru
+        const hasAskFollowUp = body.includes('Ask a follow-up')
+                            || body.includes('Ask follow-up')
+                            || body.includes('Задайте уточняющий вопрос')         // ru: input placeholder
+                            || body.includes('Последующие вопросы');              // ru: section heading
 
         // Check for prose content (actual response) - lowered threshold for short answers
         const proseEls = [...document.querySelectorAll('[class*="prose"]')];
@@ -398,7 +407,10 @@ export class CometAI {
               afterMarker = afterMarker.replace(/^[>›→\\s]+/, '').trim();
 
               // Find where the response ends (before input area or UI elements)
-              const endMarkers = ['Ask anything', 'Ask a follow-up', 'Add details', 'Type a message'];
+              const endMarkers = [
+                'Ask anything', 'Ask a follow-up', 'Add details', 'Type a message',
+                'Задайте уточняющий вопрос', 'Последующие вопросы' // ru
+              ];
               let endIndex = afterMarker.length;
               for (const marker of endMarkers) {
                 const idx = afterMarker.indexOf(marker);
@@ -418,7 +430,10 @@ export class CometAI {
               const markerIndex = bodyText.indexOf(sourcesMatch[0]);
               if (markerIndex !== -1) {
                 let afterMarker = bodyText.substring(markerIndex + sourcesMatch[0].length).trim();
-                const endMarkers = ['Ask anything', 'Ask a follow-up', 'Add details'];
+                const endMarkers = [
+                  'Ask anything', 'Ask a follow-up', 'Add details',
+                  'Задайте уточняющий вопрос', 'Последующие вопросы' // ru
+                ];
                 let endIndex = afterMarker.length;
                 for (const marker of endMarkers) {
                   const idx = afterMarker.indexOf(marker);
@@ -457,7 +472,10 @@ export class CometAI {
               .replace(/Ask a follow-up/gi, '')
               .replace(/Ask anything\\.*/gi, '')
               .replace(/Add details to this task\\.*/gi, '')
+              .replace(/Задайте уточняющий вопрос/giu, '')        // ru
+              .replace(/Последующие вопросы/giu, '')              // ru
               .replace(/\\d+\\s*sources?\\s*$/gi, '')
+              .replace(/\\d+\\s*источник(?:а|ов)?\\s*$/giu, '')   // ru
               .replace(/[\\u{1F300}-\\u{1F9FF}]/gu, '') // Remove most emojis from UI
               .replace(/^[>›→\\s]+/gm, '') // Remove leading arrows
               .replace(/\\n{3,}/g, '\\n\\n') // Collapse multiple newlines
