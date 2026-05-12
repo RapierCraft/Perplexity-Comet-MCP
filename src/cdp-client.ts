@@ -359,7 +359,6 @@ export class CometCDPClient {
   // proven stable, so a flapping link doesn't silently bypass the
   // max-attempts breaker.
   private consecutiveSuccesses: number = 0;
-  private connectionCheckInterval: NodeJS.Timeout | null = null;
   private lastHealthCheck: number = 0;
   private healthCheckCache: boolean = false;
   private readonly HEALTH_CHECK_CACHE_MS: number = 2000; // Cache health check for 2s
