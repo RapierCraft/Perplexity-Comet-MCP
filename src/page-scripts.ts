@@ -148,12 +148,16 @@ export function extractAgentStatus(): AgentStatusResult {
     const bodyText = mainContent.innerText;
 
     // Strategy 1: Find content after "X steps completed" marker (agent's final response).
-    // Use lastIndexOf: in multi-turn chats Perplexity keeps previous-turn
-    // markers visible in the scroll buffer, and `indexOf` would return the
-    // FIRST (oldest) match — i.e. the response from a previous question.
-    const stepsMatch = bodyText.match(/(\d+)\s*steps?\s*completed/i);
+    // In multi-turn chats Perplexity keeps previous-turn markers in the
+    // scroll buffer, and the marker text differs across turns ("3 steps
+    // completed" vs "5 steps completed"). `match()` returns only the
+    // FIRST match, so anchoring on it — with either `indexOf` or
+    // `lastIndexOf` of that exact string — lands on the OLDEST turn.
+    // Walk every match with the /g flag and take the last one.
+    const stepsMatches = [...bodyText.matchAll(/(\d+)\s*steps?\s*completed/gi)];
+    const stepsMatch = stepsMatches.length > 0 ? stepsMatches[stepsMatches.length - 1] : null;
     if (stepsMatch) {
-      const markerIndex = bodyText.lastIndexOf(stepsMatch[0]);
+      const markerIndex = stepsMatch.index ?? -1;
       if (markerIndex !== -1) {
         // Get everything after the marker
         let afterMarker = bodyText.substring(markerIndex + stepsMatch[0].length).trim();
@@ -180,10 +184,11 @@ export function extractAgentStatus(): AgentStatusResult {
 
     // Strategy 2: If no steps marker, look for content after source citations
     if (!response || response.length < 50) {
-      const sourcesMatch = bodyText.match(/Reviewed\s+\d+\s+sources?/i);
+      // Same rationale as Strategy 1: walk every match and take the last.
+      const sourcesMatches = [...bodyText.matchAll(/Reviewed\s+\d+\s+sources?/gi)];
+      const sourcesMatch = sourcesMatches.length > 0 ? sourcesMatches[sourcesMatches.length - 1] : null;
       if (sourcesMatch) {
-        // Same rationale as Strategy 1: prefer the most recent marker.
-        const markerIndex = bodyText.lastIndexOf(sourcesMatch[0]);
+        const markerIndex = sourcesMatch.index ?? -1;
         if (markerIndex !== -1) {
           let afterMarker = bodyText.substring(markerIndex + sourcesMatch[0].length).trim();
           const endMarkers = [
