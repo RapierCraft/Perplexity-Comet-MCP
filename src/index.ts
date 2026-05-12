@@ -13,60 +13,13 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { cometClient } from "./cdp-client.js";
 import { cometAI } from "./comet-ai.js";
-
-// Session state for tracking task progress and preventing stale responses
-interface SessionState {
-  currentTaskId: string | null;
-  taskStartTime: number | null;
-  lastPrompt: string | null;
-  lastResponse: string | null;
-  lastResponseTime: number | null;
-  steps: string[];
-  isActive: boolean;
-}
-
-const sessionState: SessionState = {
-  currentTaskId: null,
-  taskStartTime: null,
-  lastPrompt: null,
-  lastResponse: null,
-  lastResponseTime: null,
-  steps: [],
-  isActive: false,
-};
-
-// Helper to generate task ID
-function generateTaskId(): string {
-  return `task_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-}
-
-// Helper to reset session for new task
-function startNewTask(prompt: string): string {
-  const taskId = generateTaskId();
-  sessionState.currentTaskId = taskId;
-  sessionState.taskStartTime = Date.now();
-  sessionState.lastPrompt = prompt;
-  sessionState.lastResponse = null;
-  sessionState.lastResponseTime = null;
-  sessionState.steps = [];
-  sessionState.isActive = true;
-  cometAI.resetStabilityTracking();
-  return taskId;
-}
-
-// Helper to complete task
-function completeTask(response: string): void {
-  sessionState.lastResponse = response;
-  sessionState.lastResponseTime = Date.now();
-  sessionState.isActive = false;
-}
-
-// Helper to check if session is stale
-function isSessionStale(): boolean {
-  if (!sessionState.taskStartTime) return true;
-  // Consider session stale if no activity for 5 minutes
-  return Date.now() - sessionState.taskStartTime > 5 * 60 * 1000;
-}
+import {
+  sessionState,
+  startNewTask,
+  completeTask,
+  isSessionStale,
+} from "./session-state.js";
+import { readProseState, type ProseState } from "./page-scripts.js";
 
 const TOOLS: Tool[] = [
   {
@@ -321,17 +274,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         cometAI.resetStabilityTracking();
 
         // Capture old response state BEFORE sending prompt (for follow-up detection)
-        const oldStateResult = await cometClient.evaluate(`
-          (() => {
-            const proseEls = document.querySelectorAll('[class*="prose"]');
-            const lastProse = proseEls[proseEls.length - 1];
-            return {
-              count: proseEls.length,
-              lastText: lastProse ? lastProse.innerText.substring(0, 100) : ''
-            };
-          })()
-        `);
-        const oldState = oldStateResult.result.value as { count: number; lastText: string };
+        const oldStateResult = await cometClient.evaluate(`(${readProseState.toString()})()`);
+        const oldState = oldStateResult.result.value as ProseState;
 
         // Send the prompt
         await cometAI.sendPrompt(prompt);
@@ -364,18 +308,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
             // Check if we have a NEW response (more prose elements or different text)
             const currentStateResult = await cometClient.withAutoReconnect(async () => {
-              return await cometClient.evaluate(`
-                (() => {
-                  const proseEls = document.querySelectorAll('[class*="prose"]');
-                  const lastProse = proseEls[proseEls.length - 1];
-                  return {
-                    count: proseEls.length,
-                    lastText: lastProse ? lastProse.innerText.substring(0, 100) : ''
-                  };
-                })()
-              `);
+              return await cometClient.evaluate(`(${readProseState.toString()})()`);
             });
-            const currentState = currentStateResult.result.value as { count: number; lastText: string };
+            const currentState = currentStateResult.result.value as ProseState;
 
             // Detect new response
             if (!sawNewResponse) {
