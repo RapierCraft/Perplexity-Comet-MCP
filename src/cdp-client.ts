@@ -112,6 +112,63 @@ export async function captureScreenshotWithFallback(
   return result;
 }
 
+/** Per-frame lifecycle accumulator: frameId -> { current loaderId, event names seen }. */
+export type FrameLifecycleMap = Map<string, { loaderId: string; events: Set<string> }>;
+
+/**
+ * The slice of the CDP Page domain that `waitForLifecycle` uses. The return
+ * type of `lifecycleEvent(handler)` is CRI's unsubscribe function — api.js:49
+ * returns `() => chrome.removeListener(rawEventName, handler)`.
+ */
+export interface LifecyclePageAPI {
+  lifecycleEvent(handler: (params: { name?: string }) => void): () => unknown;
+}
+
+/**
+ * Wait until any frame in `frameLifecycle` has fired the named
+ * Page.lifecycleEvent (e.g. 'firstContentfulPaint', 'networkAlmostIdle').
+ * Resolves true if the event is in the cache or arrives before the timeout;
+ * false otherwise. Cleans up its listener and timer on every exit path.
+ *
+ * Defensive ordering: the listener is registered *before* scanning the
+ * cache, so even if the event arrived on an I/O turn between calls it's
+ * caught by the live listener rather than missed. Single-threaded JS makes
+ * the synchronous-only path safe today, but the order matters if anything
+ * upstream (CRI internals, scheduler) ever inserts a microtask here.
+ *
+ * Extracted as a free function so it can be unit tested against a fake
+ * Page + map without a live CDP connection.
+ */
+export function waitForLifecycle(
+  page: LifecyclePageAPI,
+  frameLifecycle: FrameLifecycleMap,
+  eventName: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let done = false;
+    let unsubscribe: (() => unknown) | null = null;
+    let timer: NodeJS.Timeout | null = null;
+    const finish = (val: boolean) => {
+      if (done) return;
+      done = true;
+      if (unsubscribe) { try { unsubscribe(); } catch { /* ignore */ } }
+      if (timer) clearTimeout(timer);
+      resolve(val);
+    };
+    const listener = (params: { name?: string }) => {
+      if (params?.name === eventName) finish(true);
+    };
+    try {
+      unsubscribe = page.lifecycleEvent(listener);
+    } catch { finish(false); return; }
+    for (const { events } of frameLifecycle.values()) {
+      if (events.has(eventName)) { finish(true); return; }
+    }
+    timer = setTimeout(() => finish(false), timeoutMs);
+  });
+}
+
 // Detect if running in WSL (must be before windowsFetch)
 function isWSL(): boolean {
   if (platform() !== 'linux') return false;
@@ -264,7 +321,7 @@ export class CometCDPClient {
   // Page lifecycle tracking — events accumulated per frame for the current
   // document (loaderId). Used by waitForLifecycle() so screenshots and other
   // ops can confirm the renderer has actually painted before they run.
-  private frameLifecycle: Map<string, { loaderId: string; events: Set<string> }> = new Map();
+  private frameLifecycle: FrameLifecycleMap = new Map();
   private lifecycleListener: ((params: any) => void) | null = null;
   private lifecycleUnsubscribe: (() => unknown) | null = null;
 
@@ -1167,45 +1224,6 @@ export class CometCDPClient {
   }
 
   /**
-   * Wait for any frame in the current document to have fired the named
-   * Page.lifecycleEvent (e.g. 'firstContentfulPaint', 'networkAlmostIdle').
-   * Returns true if the event has fired (or fires before the timeout); false
-   * on timeout. If the event has already fired before this is called,
-   * resolves synchronously (no listener registered).
-   *
-   * Defensive ordering: the listener is registered *before* scanning the
-   * cache, so even if FCP arrived on an I/O turn between calls, it's caught
-   * by the live listener rather than missed. Single-threaded JS makes the
-   * synchronous-only path safe today, but the order matters if anything
-   * upstream (CRI internals, the scheduler) ever inserts a microtask here.
-   */
-  private async waitForLifecycle(eventName: string, timeoutMs: number): Promise<boolean> {
-    const client = this.client;
-    if (!client) return false;
-    return new Promise<boolean>((resolve) => {
-      let done = false;
-      let unsubscribe: (() => unknown) | null = null;
-      let timer: NodeJS.Timeout | null = null;
-      const finish = (val: boolean) => {
-        if (done) return;
-        done = true;
-        if (unsubscribe) { try { unsubscribe(); } catch { /* ignore */ } }
-        if (timer) clearTimeout(timer);
-        resolve(val);
-      };
-      const listener = (params: any) => { if (params?.name === eventName) finish(true); };
-      try {
-        unsubscribe = client.Page.lifecycleEvent(listener);
-      } catch { finish(false); return; }
-      // Cache check after listener registration — see method docstring.
-      for (const { events } of this.frameLifecycle.values()) {
-        if (events.has(eventName)) { finish(true); return; }
-      }
-      timer = setTimeout(() => finish(false), timeoutMs);
-    });
-  }
-
-  /**
    * Disconnect from current tab
    */
   async disconnect(): Promise<void> {
@@ -1292,7 +1310,7 @@ export class CometCDPClient {
     // Wait for paint readiness via Page.lifecycleEvent (Lighthouse/Puppeteer
     // approach). If firstContentfulPaint already fired for this document the
     // call returns synchronously; otherwise we wait up to 2s for the next FCP.
-    await this.waitForLifecycle('firstContentfulPaint', 2000);
+    await waitForLifecycle(this.client!.Page, this.frameLifecycle, 'firstContentfulPaint', 2000);
 
     return captureScreenshotWithFallback(this.client!.Page, format);
   }
