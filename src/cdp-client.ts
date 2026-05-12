@@ -18,10 +18,16 @@ import type {
 // Hidden targets (e.g. the Perplexity sidecar panel) can report a 0x0 layout
 // viewport in some Comet window states (cold launch, no real browsing tabs in
 // front). When that happens, Page.captureScreenshot waits for compositor
-// frames that never arrive and stalls for ~2 minutes. Detecting any
-// degenerate dimension via Page.getLayoutMetrics() and supplying an explicit
-// clip + captureBeyondViewport=true makes the renderer produce a frame
-// immediately.
+// frames that never arrive and stalls for ~2 minutes. Detecting that state
+// via Page.getLayoutMetrics() and supplying an explicit clip +
+// captureBeyondViewport=true makes the renderer produce a frame immediately.
+//
+// The predicate is intentionally tight: both dimensions must be zero. Live
+// CDP testing confirmed that 0x0 is the only reproducible viewport state
+// that triggers the stall — Chromium's Emulation.setDeviceMetricsOverride
+// rejects single-zero dimensions and falls back to the natural viewport,
+// and the natural 0x0 case is "no layout computed yet" (an all-or-nothing
+// state). A 0xN or Nx0 viewport is not a state we can observe in practice.
 const SCREENSHOT_FALLBACK_CLIP = {
   x: 0,
   y: 0,
@@ -63,7 +69,7 @@ export async function captureScreenshotWithFallback(
   try {
     const metrics = await page.getLayoutMetrics();
     const v = metrics.cssLayoutViewport ?? metrics.layoutViewport;
-    if (!v?.clientWidth || !v?.clientHeight) {
+    if (!v?.clientWidth && !v?.clientHeight) {
       clip = SCREENSHOT_FALLBACK_CLIP;
     }
   } catch {

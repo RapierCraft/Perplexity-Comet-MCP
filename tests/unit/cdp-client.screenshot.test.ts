@@ -10,7 +10,16 @@ const FALLBACK_CLIP = {
   scale: 1,
 };
 
-describe("captureScreenshotWithFallback — normal viewport", () => {
+// The predicate that triggers the fallback is `!width && !height` — both
+// dimensions must be zero. Live CDP testing showed 0×0 is the only
+// reproducible state that hangs Page.captureScreenshot: Chromium's
+// Emulation.setDeviceMetricsOverride rejects single-zero dimensions, and
+// the natural 0×0 case (visibilityState='hidden' with no layout computed)
+// is all-or-nothing. So 0×N and N×0 are exercised here for boundary
+// coverage but treated as non-degenerate; if the wrapper ever observed
+// one in the wild, we'd trust the reported dimensions rather than fall
+// back.
+describe("captureScreenshotWithFallback — non-degenerate viewport", () => {
   it("forwards format and supplies no clip when the cssLayoutViewport is non-zero", async () => {
     const page = new FakeScreenshotPage();
     page.setMetrics({ cssLayoutViewport: { clientWidth: 1024, clientHeight: 768 } });
@@ -24,6 +33,24 @@ describe("captureScreenshotWithFallback — normal viewport", () => {
   it("falls back to layoutViewport when cssLayoutViewport is missing", async () => {
     const page = new FakeScreenshotPage();
     page.setMetrics({ layoutViewport: { clientWidth: 800, clientHeight: 600 } });
+
+    await captureScreenshotWithFallback(page, "png");
+
+    expect(page.captureScreenshotCalls[0]).toEqual({ format: "png" });
+  });
+
+  it("does NOT supply a fallback clip when only width is 0", async () => {
+    const page = new FakeScreenshotPage();
+    page.setMetrics({ cssLayoutViewport: { clientWidth: 0, clientHeight: 800 } });
+
+    await captureScreenshotWithFallback(page, "png");
+
+    expect(page.captureScreenshotCalls[0]).toEqual({ format: "png" });
+  });
+
+  it("does NOT supply a fallback clip when only height is 0", async () => {
+    const page = new FakeScreenshotPage();
+    page.setMetrics({ cssLayoutViewport: { clientWidth: 1024, clientHeight: 0 } });
 
     await captureScreenshotWithFallback(page, "png");
 
@@ -50,36 +77,6 @@ describe("captureScreenshotWithFallback — degenerate viewport", () => {
   it("supplies the fallback clip + captureBeyondViewport when viewport is 0×0", async () => {
     const page = new FakeScreenshotPage();
     page.setMetrics({ cssLayoutViewport: { clientWidth: 0, clientHeight: 0 } });
-
-    await captureScreenshotWithFallback(page, "png");
-
-    expect(page.captureScreenshotCalls[0]).toEqual({
-      format: "png",
-      captureBeyondViewport: true,
-      clip: FALLBACK_CLIP,
-    });
-  });
-
-  // The wrapper treats any zero dimension as degenerate (`||` semantics).
-  // This is defensive: a 0×N or N×0 viewport can't produce a useful
-  // screenshot anyway, so falling back to a real frame is preferable to
-  // returning a zero-pixel image.
-  it("supplies the fallback clip when width is 0 but height is non-zero", async () => {
-    const page = new FakeScreenshotPage();
-    page.setMetrics({ cssLayoutViewport: { clientWidth: 0, clientHeight: 800 } });
-
-    await captureScreenshotWithFallback(page, "png");
-
-    expect(page.captureScreenshotCalls[0]).toEqual({
-      format: "png",
-      captureBeyondViewport: true,
-      clip: FALLBACK_CLIP,
-    });
-  });
-
-  it("supplies the fallback clip when height is 0 but width is non-zero", async () => {
-    const page = new FakeScreenshotPage();
-    page.setMetrics({ cssLayoutViewport: { clientWidth: 1024, clientHeight: 0 } });
 
     await captureScreenshotWithFallback(page, "png");
 
