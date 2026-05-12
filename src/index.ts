@@ -647,12 +647,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (clickResult.success && clickResult.needsSelect) {
           // Wait for dropdown to open, then select the mode
           await new Promise(resolve => setTimeout(resolve, 300));
+          // `mode` was validated against modeMap above, but encode anyway to
+          // guarantee any future caller cannot inject JS via this template.
+          const safeMode = JSON.stringify(mode);
           const selectResult = await cometClient.evaluate(`
             (() => {
               // Look for dropdown menu items
               const items = document.querySelectorAll('[role="menuitem"], [role="option"], button');
               for (const item of items) {
-                if (item.innerText.toLowerCase().includes('${mode}')) {
+                if (item.innerText.toLowerCase().includes(${safeMode})) {
                   item.click();
                   return { success: true };
                 }
