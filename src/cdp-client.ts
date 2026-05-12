@@ -350,10 +350,15 @@ export class CometCDPClient {
       } catch { /* target gone */ }
     }
 
-    // Find best target
+    // Find best target. Prefer the MAIN Perplexity tab — explicitly
+    // exclude `sidecar` URLs, which Comet uses for its right-panel
+    // chat helper. Connecting to the sidecar by mistake silently
+    // routes `sendPrompt` / `stopAgent` to the wrong tab.
     const targets = await this.listTargets();
-    const target = targets.find(t => t.type === 'page' && t.url.includes('perplexity.ai')) ||
-                   targets.find(t => t.type === 'page' && t.url !== 'about:blank');
+    const target =
+      targets.find(t => t.type === 'page' && t.url.includes('perplexity.ai') && !t.url.includes('sidecar')) ||
+      targets.find(t => t.type === 'page' && t.url.includes('perplexity.ai')) ||
+      targets.find(t => t.type === 'page' && t.url !== 'about:blank');
 
     if (target) {
       return await this.connect(target.id);
@@ -405,7 +410,9 @@ export class CometCDPClient {
    */
   async ensureOnPerplexityTab(): Promise<boolean> {
     try {
-      // First check if current connection is valid and on Perplexity
+      // First check if current connection is valid and on Perplexity.
+      // Reject the sidecar URL — same reason as in reconnect(): the
+      // sidecar matches `perplexity.ai` but is a different tab.
       if (this.client) {
         try {
           const urlResult = await this.client.Runtime.evaluate({
@@ -413,8 +420,8 @@ export class CometCDPClient {
             timeout: 2000
           });
           const currentUrl = urlResult.result.value as string;
-          if (currentUrl?.includes('perplexity.ai')) {
-            return true; // Already on Perplexity tab
+          if (currentUrl?.includes('perplexity.ai') && !currentUrl.includes('sidecar')) {
+            return true; // Already on Perplexity main tab
           }
         } catch {
           // Current connection is stale, continue to reconnect
@@ -429,10 +436,10 @@ export class CometCDPClient {
         return true;
       }
 
-      // Fallback: find any Perplexity tab
+      // Fallback: find any Perplexity tab that isn't the sidecar.
       const targets = await this.listTargets();
       const perplexityTab = targets.find(t =>
-        t.type === 'page' && t.url.includes('perplexity.ai')
+        t.type === 'page' && t.url.includes('perplexity.ai') && !t.url.includes('sidecar')
       );
 
       if (perplexityTab) {
@@ -458,7 +465,10 @@ export class CometCDPClient {
         timeout: 2000
       });
       const url = result.result.value as string;
-      return url?.includes('perplexity.ai') || false;
+      // Sidecar URLs match `perplexity.ai` but are a different surface; treat
+      // them as "not the main tab" so callers don't dispatch sendPrompt /
+      // stopAgent there.
+      return !!url && url.includes('perplexity.ai') && !url.includes('sidecar');
     } catch {
       return false;
     }

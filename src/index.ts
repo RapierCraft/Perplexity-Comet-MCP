@@ -136,8 +136,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const targets = await cometClient.listTargets();
         const freshTargets = targets; // Use the same list, no cleanup
 
-        // Prefer connecting to existing Perplexity tab, or any page tab
-        const perplexityTab = freshTargets.find(t => t.type === 'page' && t.url.includes('perplexity.ai'));
+        // Prefer connecting to the MAIN Perplexity tab (not the sidecar).
+        // Comet's right-panel chat helper lives at a sidecar URL that also
+        // matches `perplexity.ai` substring — connecting to it routes
+        // sendPrompt / stopAgent to the wrong tab.
+        const perplexityTab =
+          freshTargets.find(t => t.type === 'page' && t.url.includes('perplexity.ai') && !t.url.includes('sidecar')) ||
+          freshTargets.find(t => t.type === 'page' && t.url.includes('perplexity.ai'));
         const anyPage = perplexityTab || freshTargets.find(t => t.type === 'page');
 
         if (anyPage) {
@@ -188,7 +193,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           try {
             await cometClient.startComet(9223);
             const targets = await cometClient.listTargets();
-            const page = targets.find(t => t.type === 'page');
+            // Prefer Perplexity main tab over the sidecar (see comet_connect
+            // for rationale). Fall back to any page tab if neither exists.
+            const page =
+              targets.find(t => t.type === 'page' && t.url.includes('perplexity.ai') && !t.url.includes('sidecar')) ||
+              targets.find(t => t.type === 'page' && t.url.includes('perplexity.ai')) ||
+              targets.find(t => t.type === 'page');
             if (page) await cometClient.connect(page.id);
           } catch {
             return { content: [{ type: "text", text: "Error: Failed to establish connection to Comet browser" }] };
