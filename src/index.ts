@@ -273,9 +273,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Reset stability tracking for new prompt
         cometAI.resetStabilityTracking();
 
-        // Capture old response state BEFORE sending prompt (for follow-up detection)
+        // Capture old response state BEFORE sending prompt (for follow-up detection).
+        // We snapshot BOTH the cheap prose-count summary AND the full
+        // `extractAgentStatus().response` — the latter is what each
+        // completion branch returns, so comparing to it is the only way
+        // to be sure we're not handing back the previous turn's answer
+        // when Perplexity has not yet visibly updated the page.
         const oldStateResult = await cometClient.evaluate(`(${readProseState.toString()})()`);
         const oldState = oldStateResult.result.value as ProseState;
+        let oldResponseSnapshot = '';
+        try {
+          const oldStatus = await cometAI.getAgentStatus();
+          oldResponseSnapshot = oldStatus.response || '';
+        } catch {
+          // Pre-send status check is best-effort; leaving oldResponseSnapshot
+          // empty means the freshness check below simply requires a non-empty
+          // response (still strictly stronger than no check at all).
+        }
 
         // Send the prompt
         await cometAI.sendPrompt(prompt);
@@ -340,23 +354,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             // Track steps in session state
             sessionState.steps = stepsCollected;
 
+            // Stale-answer guard: a response equal to the snapshot taken
+            // BEFORE we sent the new prompt is, by definition, the previous
+            // turn's answer (Perplexity has not yet overwritten the DOM).
+            // Required by every completion branch — without it the polling
+            // loop can hand back the previous answer for the new question
+            // when `extractAgentStatus` matches stale markers still in the
+            // scroll buffer.
+            const responseIsFresh =
+              !!status.response && status.response !== oldResponseSnapshot;
+
             // COMPLETION CONDITIONS (return immediately when any are met):
 
             // 1. Explicit completion detected by status checker
-            if (status.status === 'completed' && sawNewResponse && status.response) {
+            if (status.status === 'completed' && sawNewResponse && responseIsFresh) {
               completeTask(status.response);
               return { content: [{ type: "text", text: status.response }] };
             }
 
             // 2. Response is stable (same content for 2+ polls) and no stop button
-            if (status.isStable && sawNewResponse && status.response && !status.hasStopButton) {
+            if (status.isStable && sawNewResponse && responseIsFresh && !status.hasStopButton) {
               completeTask(status.response);
               return { content: [{ type: "text", text: status.response }] };
             }
 
             // 3. Idle timeout - no activity for 6s but we have a substantial response
             const idleTime = Date.now() - lastActivityTime;
-            if (idleTime > IDLE_TIMEOUT && sawNewResponse && status.response &&
+            if (idleTime > IDLE_TIMEOUT && sawNewResponse && responseIsFresh &&
                 status.response.length > 100 && !status.hasStopButton) {
               completeTask(status.response);
               return { content: [{ type: "text", text: status.response }] };
@@ -391,9 +415,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
-        // Max timeout reached - return whatever we have
+        // Max timeout reached - return whatever we have.
+        // Same stale-answer guard: only return text that actually changed
+        // since we sent the prompt. If everything is stale we fall through
+        // to the "in progress" branch below, which tells the caller to
+        // keep polling rather than handing back the previous answer.
         const finalStatus = await cometAI.getAgentStatus();
-        if (finalStatus.response && finalStatus.response.length > 50) {
+        if (finalStatus.response && finalStatus.response.length > 50 &&
+            finalStatus.response !== oldResponseSnapshot) {
           completeTask(finalStatus.response);
           return { content: [{ type: "text", text: finalStatus.response }] };
         }
