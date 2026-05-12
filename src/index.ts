@@ -4,6 +4,9 @@
 // Claude Code ↔ Perplexity Comet bidirectional interaction
 // Simplified to 6 essential tools
 
+import { readFileSync } from "fs";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -11,7 +14,7 @@ import {
   ListToolsRequestSchema,
   Tool,
 } from "@modelcontextprotocol/sdk/types.js";
-import { cometClient } from "./cdp-client.js";
+import { cometClient, DEFAULT_PORT } from "./cdp-client.js";
 import { cometAI } from "./comet-ai.js";
 import {
   sessionState,
@@ -20,6 +23,21 @@ import {
   isSessionStale,
 } from "./session-state.js";
 import { readProseState, type ProseState } from "./page-scripts.js";
+
+// Read version from package.json so the MCP `initialize` handshake reports
+// the actually-shipped version. Hardcoding (previously "2.5.0" while
+// package.json was "2.6.2") drifts every release.
+function readPackageVersion(): string {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkgPath = join(here, "..", "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as { version?: string };
+    return pkg.version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+const SERVER_VERSION = readPackageVersion();
 
 const TOOLS: Tool[] = [
   {
@@ -117,7 +135,7 @@ const TOOLS: Tool[] = [
 ];
 
 const server = new Server(
-  { name: "comet-bridge", version: "2.5.0" },
+  { name: "comet-bridge", version: SERVER_VERSION },
   { capabilities: { tools: {} } }
 );
 
@@ -130,7 +148,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     switch (name) {
       case "comet_connect": {
         // Auto-start Comet with debug port (will restart if running without it)
-        const startResult = await cometClient.startComet(9223);
+        const startResult = await cometClient.startComet(DEFAULT_PORT);
 
         // Get all tabs - DON'T clean up tabs, as closing them can crash Comet
         const targets = await cometClient.listTargets();
@@ -186,7 +204,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         } catch (preCheckError) {
           // If pre-check fails, try to recover
           try {
-            await cometClient.startComet(9223);
+            await cometClient.startComet(DEFAULT_PORT);
             const targets = await cometClient.listTargets();
             const page = targets.find(t => t.type === 'page');
             if (page) await cometClient.connect(page.id);

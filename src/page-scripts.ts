@@ -70,8 +70,17 @@ export function extractAgentStatus(): AgentStatusResult {
   // miss completion on non-English accounts and force fallback to slow
   // response-stability polling (~90s). See PR #9 notes for marker source.
   const hasStepsCompleted = /\d+ steps? completed/i.test(body)
-                         || /Выполнено\s+\d+\s+шаг(?:а|ов)?/iu.test(body); // ru
-  const hasFinishedMarker = body.includes("Finished") && !hasActiveStopButton;
+                         // Russian agrees the verb with grammatical number:
+                         //   "Выполнен 1 шаг" (sg), "Выполнено 2/3/4 шага",
+                         //   "Выполнено 5+ шагов". The previous regex matched
+                         //   only "Выполнено …" and missed the singular case.
+                         || /Выполнен(?:о|ы)?\s+\d+\s+шаг(?:а|ов)?/iu.test(body); // ru
+  // Word-boundary the English marker and exclude "Finished reading|analyzing|…",
+  // which is an *intermediate* step Perplexity renders while the agent is
+  // still running. Without this, the agent flips to "completed" the moment
+  // the first source is processed.
+  const hasFinishedMarker = /\bFinished\b(?!\s+(?:reading|analyzing|browsing|searching|loading))/i.test(body)
+                          && !hasActiveStopButton;
   const hasReviewedSources = /Reviewed \d+ sources?/i.test(body);
   const hasSourcesIndicator = /\d+\s*sources?/i.test(body)              // en
                            || /\d+\s*источник(?:а|ов)?/iu.test(body);    // ru
@@ -138,10 +147,13 @@ export function extractAgentStatus(): AgentStatusResult {
     const mainContent = (document.querySelector("main") || document.body) as HTMLElement;
     const bodyText = mainContent.innerText;
 
-    // Strategy 1: Find content after "X steps completed" marker (agent's final response)
+    // Strategy 1: Find content after "X steps completed" marker (agent's final response).
+    // Use lastIndexOf: in multi-turn chats Perplexity keeps previous-turn
+    // markers visible in the scroll buffer, and `indexOf` would return the
+    // FIRST (oldest) match — i.e. the response from a previous question.
     const stepsMatch = bodyText.match(/(\d+)\s*steps?\s*completed/i);
     if (stepsMatch) {
-      const markerIndex = bodyText.indexOf(stepsMatch[0]);
+      const markerIndex = bodyText.lastIndexOf(stepsMatch[0]);
       if (markerIndex !== -1) {
         // Get everything after the marker
         let afterMarker = bodyText.substring(markerIndex + stepsMatch[0].length).trim();
@@ -170,7 +182,8 @@ export function extractAgentStatus(): AgentStatusResult {
     if (!response || response.length < 50) {
       const sourcesMatch = bodyText.match(/Reviewed\s+\d+\s+sources?/i);
       if (sourcesMatch) {
-        const markerIndex = bodyText.indexOf(sourcesMatch[0]);
+        // Same rationale as Strategy 1: prefer the most recent marker.
+        const markerIndex = bodyText.lastIndexOf(sourcesMatch[0]);
         if (markerIndex !== -1) {
           let afterMarker = bodyText.substring(markerIndex + sourcesMatch[0].length).trim();
           const endMarkers = [

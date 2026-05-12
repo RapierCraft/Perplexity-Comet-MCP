@@ -143,7 +143,21 @@ function getCometPath(): string {
 
 const COMET_PATH = getCometPath();
 const IS_WINDOWS = platform() === "win32" || IS_WSL;
-const DEFAULT_PORT = 9223;
+
+// Honour the documented `COMET_PORT` env var (see README "Environment Variables").
+// Previously the constant was hardcoded to 9223 and call sites passed the literal
+// straight to `startComet(9223)`, so the env var was silently ignored.
+function readPortFromEnv(): number {
+  const raw = process.env.COMET_PORT;
+  if (!raw) return 9223;
+  const n = parseInt(raw, 10);
+  if (!Number.isInteger(n) || n < 1 || n > 65535) {
+    console.error(`Invalid COMET_PORT="${raw}", falling back to 9223`);
+    return 9223;
+  }
+  return n;
+}
+export const DEFAULT_PORT = readPortFromEnv();
 
 export class CometCDPClient {
   private client: CDP.Client | null = null;
@@ -574,12 +588,21 @@ export class CometCDPClient {
   }
 
   /**
-   * Find a tab by domain (for reuse)
+   * Find a tab by domain (for reuse).
+   *
+   * Match is "exact or subdomain": `findTabByDomain("github.com")` matches
+   * both `github.com` and `gist.github.com`, but NOT `notgithub.com`. The
+   * previous `includes`/reverse-`includes` heuristic produced surprising
+   * matches — `domain: "ai"` matched `perplexity.ai`, `chat.openai.com`,
+   * etc., and a search for `"mail.google.com"` would match a `google.com`
+   * tab via the reverse direction.
    */
   async findTabByDomain(domain: string): Promise<TabContext | null> {
     await this.refreshTabRegistry();
+    const target = domain.toLowerCase();
     for (const tab of this.tabRegistry.values()) {
-      if (tab.domain.includes(domain) || domain.includes(tab.domain)) {
+      const tabDomain = tab.domain.toLowerCase();
+      if (tabDomain === target || tabDomain.endsWith(`.${target}`)) {
         return tab;
       }
     }
@@ -965,16 +988,21 @@ export class CometCDPClient {
     if (IS_WINDOWS) {
       try {
         const tempClient = await CDP({ port: this.state.port, host: '127.0.0.1' });
-        const { targetInfos } = await (tempClient as any).Target.getTargets();
-        await tempClient.close();
-
-        return targetInfos.map((t: any) => ({
-          id: t.targetId,
-          type: t.type,
-          title: t.title,
-          url: t.url,
-          webSocketDebuggerUrl: `ws://127.0.0.1:${this.state.port}/devtools/page/${t.targetId}`
-        }));
+        try {
+          const { targetInfos } = await (tempClient as any).Target.getTargets();
+          return targetInfos.map((t: any) => ({
+            id: t.targetId,
+            type: t.type,
+            title: t.title,
+            url: t.url,
+            webSocketDebuggerUrl: `ws://127.0.0.1:${this.state.port}/devtools/page/${t.targetId}`
+          }));
+        } finally {
+          // Close in `finally` so a throw inside `Target.getTargets()` does
+          // not leak the underlying WebSocket. Each retry in withAutoReconnect
+          // calls listTargets() again — even a slow leak exhausts handles.
+          await tempClient.close().catch(() => { /* already closed */ });
+        }
       } catch (error) {
         throw new Error(`Failed to list targets: ${error}`);
       }
