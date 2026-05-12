@@ -15,6 +15,75 @@ import type {
   TabContext,
 } from "./types.js";
 
+// Hidden targets (e.g. the Perplexity sidecar panel) can report a 0x0 layout
+// viewport in some Comet window states (cold launch, no real browsing tabs in
+// front). When that happens, Page.captureScreenshot waits for compositor
+// frames that never arrive and stalls for ~2 minutes. Detecting any
+// degenerate dimension via Page.getLayoutMetrics() and supplying an explicit
+// clip + captureBeyondViewport=true makes the renderer produce a frame
+// immediately.
+const SCREENSHOT_FALLBACK_CLIP = {
+  x: 0,
+  y: 0,
+  width: 1280,
+  height: 800,
+  scale: 1,
+} as const;
+
+/**
+ * The slice of the CDP Page domain that `captureScreenshotWithFallback` uses.
+ * Lets unit tests substitute a hand-written fake without dragging in the full
+ * `chrome-remote-interface` Page surface.
+ */
+export interface ScreenshotPageAPI {
+  bringToFront(): Promise<unknown>;
+  getLayoutMetrics(): Promise<{
+    cssLayoutViewport?: { clientWidth: number; clientHeight: number };
+    layoutViewport?: { clientWidth: number; clientHeight: number };
+  }>;
+  captureScreenshot(opts: {
+    format: "png" | "jpeg";
+    captureBeyondViewport?: boolean;
+    clip?: typeof SCREENSHOT_FALLBACK_CLIP;
+  }): Promise<ScreenshotResult>;
+}
+
+/**
+ * Capture a screenshot, falling back to an explicit clip when the layout
+ * viewport is degenerate. Extracted as a free function so it can be unit
+ * tested against a fake Page without a live CDP connection.
+ */
+export async function captureScreenshotWithFallback(
+  page: ScreenshotPageAPI,
+  format: "png" | "jpeg" = "png",
+): Promise<ScreenshotResult> {
+  try { await page.bringToFront(); } catch { /* not all targets support it */ }
+
+  let clip: typeof SCREENSHOT_FALLBACK_CLIP | undefined;
+  try {
+    const metrics = await page.getLayoutMetrics();
+    const v = metrics.cssLayoutViewport ?? metrics.layoutViewport;
+    if (!v?.clientWidth || !v?.clientHeight) {
+      clip = SCREENSHOT_FALLBACK_CLIP;
+    }
+  } catch {
+    clip = SCREENSHOT_FALLBACK_CLIP;
+  }
+
+  const result = await page.captureScreenshot({
+    format,
+    ...(clip ? { captureBeyondViewport: true, clip } : {}),
+  });
+
+  if (!result?.data) {
+    throw new Error(
+      "Screenshot returned empty data. Ensure you're connected to a visible tab with content.",
+    );
+  }
+
+  return result;
+}
+
 // Detect if running in WSL (must be before windowsFetch)
 function isWSL(): boolean {
   if (platform() !== 'linux') return false;
@@ -1112,39 +1181,7 @@ export class CometCDPClient {
    */
   async screenshot(format: "png" | "jpeg" = "png"): Promise<ScreenshotResult> {
     this.ensureConnected();
-
-    try { await this.client!.Page.bringToFront(); } catch { /* not all targets support it */ }
-
-    // Hidden targets (e.g. the Perplexity sidecar panel) can report a 0x0
-    // layout viewport in some Comet window states (cold launch, no real
-    // browsing tabs in front). When the viewport is 0x0,
-    // Page.captureScreenshot waits for compositor frames that never arrive
-    // and stalls for ~2 minutes. Detect via Page.getLayoutMetrics() and
-    // supply an explicit clip + captureBeyondViewport so the renderer
-    // produces a frame immediately.
-    let clip: { x: number; y: number; width: number; height: number; scale: number } | undefined;
-    try {
-      const metrics = await this.client!.Page.getLayoutMetrics();
-      const v = metrics.cssLayoutViewport ?? metrics.layoutViewport;
-      if (!v?.clientWidth || !v?.clientHeight) {
-        clip = { x: 0, y: 0, width: 1280, height: 800, scale: 1 };
-      }
-    } catch {
-      clip = { x: 0, y: 0, width: 1280, height: 800, scale: 1 };
-    }
-
-    const result = await this.client!.Page.captureScreenshot({
-      format,
-      ...(clip ? { captureBeyondViewport: true, clip } : {}),
-    }) as ScreenshotResult;
-
-    if (!result?.data) {
-      throw new Error(
-        "Screenshot returned empty data. Ensure you're connected to a visible tab with content.",
-      );
-    }
-
-    return result;
+    return captureScreenshotWithFallback(this.client!.Page, format);
   }
 
   /**
