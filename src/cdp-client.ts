@@ -266,6 +266,7 @@ export class CometCDPClient {
   // ops can confirm the renderer has actually painted before they run.
   private frameLifecycle: Map<string, { loaderId: string; events: Set<string> }> = new Map();
   private lifecycleListener: ((params: any) => void) | null = null;
+  private lifecycleUnsubscribe: (() => unknown) | null = null;
 
   get isConnected(): boolean {
     return this.state.connected && this.client !== null;
@@ -1131,6 +1132,11 @@ export class CometCDPClient {
     // (firstContentfulPaint, networkAlmostIdle, etc.) the way Lighthouse and
     // Puppeteer do, instead of polling document.readyState.
     this.frameLifecycle.clear();
+    if (this.lifecycleUnsubscribe) {
+      try { this.lifecycleUnsubscribe(); } catch { /* ignore */ }
+      this.lifecycleUnsubscribe = null;
+    }
+    this.lifecycleListener = null;
     try {
       await this.client.Page.setLifecycleEventsEnabled({ enabled: true });
       this.lifecycleListener = (params: any) => {
@@ -1143,7 +1149,10 @@ export class CometCDPClient {
           existing.events.add(name);
         }
       };
-      this.client.Page.lifecycleEvent(this.lifecycleListener);
+      // chrome-remote-interface's domain event callbacks return an unsubscribe
+      // function (api.js: `() => chrome.removeListener(rawEventName, handler)`).
+      // Capture it so disconnect() can deregister cleanly.
+      this.lifecycleUnsubscribe = this.client.Page.lifecycleEvent(this.lifecycleListener);
     } catch { /* lifecycle tracking is best-effort */ }
 
     this.state.connected = true;
@@ -1162,26 +1171,37 @@ export class CometCDPClient {
    * Page.lifecycleEvent (e.g. 'firstContentfulPaint', 'networkAlmostIdle').
    * Returns true if the event has fired (or fires before the timeout); false
    * on timeout. If the event has already fired before this is called,
-   * resolves synchronously.
+   * resolves synchronously (no listener registered).
+   *
+   * Defensive ordering: the listener is registered *before* scanning the
+   * cache, so even if FCP arrived on an I/O turn between calls, it's caught
+   * by the live listener rather than missed. Single-threaded JS makes the
+   * synchronous-only path safe today, but the order matters if anything
+   * upstream (CRI internals, the scheduler) ever inserts a microtask here.
    */
-  async waitForLifecycle(eventName: string, timeoutMs: number): Promise<boolean> {
-    if (!this.client) return false;
-    for (const { events } of this.frameLifecycle.values()) {
-      if (events.has(eventName)) return true;
-    }
+  private async waitForLifecycle(eventName: string, timeoutMs: number): Promise<boolean> {
+    const client = this.client;
+    if (!client) return false;
     return new Promise<boolean>((resolve) => {
       let done = false;
+      let unsubscribe: (() => unknown) | null = null;
+      let timer: NodeJS.Timeout | null = null;
       const finish = (val: boolean) => {
         if (done) return;
         done = true;
-        try { (this.client as any)?.removeListener?.('Page.lifecycleEvent', listener); } catch { /* ignore */ }
-        clearTimeout(timer);
+        if (unsubscribe) { try { unsubscribe(); } catch { /* ignore */ } }
+        if (timer) clearTimeout(timer);
         resolve(val);
       };
       const listener = (params: any) => { if (params?.name === eventName) finish(true); };
-      try { (this.client as any).on('Page.lifecycleEvent', listener); }
-      catch { finish(false); return; }
-      const timer = setTimeout(() => finish(false), timeoutMs);
+      try {
+        unsubscribe = client.Page.lifecycleEvent(listener);
+      } catch { finish(false); return; }
+      // Cache check after listener registration — see method docstring.
+      for (const { events } of this.frameLifecycle.values()) {
+        if (events.has(eventName)) { finish(true); return; }
+      }
+      timer = setTimeout(() => finish(false), timeoutMs);
     });
   }
 
@@ -1189,6 +1209,12 @@ export class CometCDPClient {
    * Disconnect from current tab
    */
   async disconnect(): Promise<void> {
+    if (this.lifecycleUnsubscribe) {
+      try { this.lifecycleUnsubscribe(); } catch { /* ignore */ }
+      this.lifecycleUnsubscribe = null;
+    }
+    this.lifecycleListener = null;
+    this.frameLifecycle.clear();
     if (this.client) {
       await this.client.close();
       this.client = null;
