@@ -15,10 +15,11 @@ const FALLBACK_CLIP = {
 // reproducible state that hangs Page.captureScreenshot: Chromium's
 // Emulation.setDeviceMetricsOverride rejects single-zero dimensions, and
 // the natural 0×0 case (visibilityState='hidden' with no layout computed)
-// is all-or-nothing. So 0×N and N×0 are exercised here for boundary
-// coverage but treated as non-degenerate; if the wrapper ever observed
-// one in the wild, we'd trust the reported dimensions rather than fall
-// back.
+// is all-or-nothing. PNG/JPEG headers also require both dimensions to be
+// >= 1, so a zero-dim image isn't a valid output format. The 0×N and N×0
+// boundary tests below therefore expect the wrapper to NOT apply the
+// fallback (no synthetic 1280×800 masking the anomaly) and to surface
+// the inevitable encoder failure via the empty-data guard.
 describe("captureScreenshotWithFallback — non-degenerate viewport", () => {
   it("forwards format and supplies no clip when the cssLayoutViewport is non-zero", async () => {
     const page = new FakeScreenshotPage();
@@ -39,21 +40,27 @@ describe("captureScreenshotWithFallback — non-degenerate viewport", () => {
     expect(page.captureScreenshotCalls[0]).toEqual({ format: "png" });
   });
 
-  it("does NOT supply a fallback clip when only width is 0", async () => {
+  it("passes through (no fallback) and fails loudly when only width is 0", async () => {
     const page = new FakeScreenshotPage();
     page.setMetrics({ cssLayoutViewport: { clientWidth: 0, clientHeight: 800 } });
+    // Model real-browser behavior: no encoder can produce output for a
+    // zero-dim image, so the captureScreenshot call returns empty data.
+    page.setScreenshotData(undefined);
 
-    await captureScreenshotWithFallback(page, "png");
-
+    await expect(captureScreenshotWithFallback(page, "png")).rejects.toThrow(
+      /empty data/i,
+    );
     expect(page.captureScreenshotCalls[0]).toEqual({ format: "png" });
   });
 
-  it("does NOT supply a fallback clip when only height is 0", async () => {
+  it("passes through (no fallback) and fails loudly when only height is 0", async () => {
     const page = new FakeScreenshotPage();
     page.setMetrics({ cssLayoutViewport: { clientWidth: 1024, clientHeight: 0 } });
+    page.setScreenshotData(undefined);
 
-    await captureScreenshotWithFallback(page, "png");
-
+    await expect(captureScreenshotWithFallback(page, "png")).rejects.toThrow(
+      /empty data/i,
+    );
     expect(page.captureScreenshotCalls[0]).toEqual({ format: "png" });
   });
 
