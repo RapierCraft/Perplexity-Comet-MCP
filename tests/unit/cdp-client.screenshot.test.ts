@@ -94,9 +94,13 @@ describe("captureScreenshotWithFallback — degenerate viewport", () => {
     });
   });
 
-  it("supplies the fallback clip when getLayoutMetrics throws", async () => {
+  // Chrome-side rejection (ProtocolError) on getLayoutMetrics typically
+  // means the method isn't supported on this target type. The wrapper
+  // recovers because captureScreenshot may still succeed at the fallback
+  // dimensions.
+  it("supplies the fallback clip when getLayoutMetrics throws a ProtocolError", async () => {
     const page = new FakeScreenshotPage();
-    page.setMetricsToThrow();
+    page.setMetricsToThrowProtocolError();
 
     await captureScreenshotWithFallback(page, "png");
 
@@ -105,6 +109,19 @@ describe("captureScreenshotWithFallback — degenerate viewport", () => {
       captureBeyondViewport: true,
       clip: FALLBACK_CLIP,
     });
+  });
+
+  // Transport-level or unexpected errors must NOT be masked with a
+  // synthetic 1280x800 capture — propagate so the caller sees the real
+  // failure (websocket dropped, target detached, etc.).
+  it("propagates non-ProtocolError throws from getLayoutMetrics", async () => {
+    const page = new FakeScreenshotPage();
+    page.setMetricsToThrowGeneric();
+
+    await expect(captureScreenshotWithFallback(page, "png")).rejects.toThrow(
+      /websocket dropped/i,
+    );
+    expect(page.captureScreenshotCalls).toHaveLength(0);
   });
 
   it("supplies the fallback clip when both viewport fields are absent", async () => {

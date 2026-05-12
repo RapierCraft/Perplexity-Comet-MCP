@@ -15,6 +15,19 @@ import type {
   TabContext,
 } from "./types.js";
 
+// chrome-remote-interface@^0.34.0 exposes `ProtocolError` at runtime
+// (`module.exports.ProtocolError = ...`), but @types/chrome-remote-interface
+// doesn't declare it yet. Cast at import so `instanceof` typechecks; remove
+// the cast once DefinitelyTyped/DefinitelyTyped#74992 lands and we pick up
+// the updated @types.
+interface CdpProtocolError extends Error {
+  request: { method: string; params?: unknown };
+  response: CDP.SendError;
+}
+const ProtocolError = (CDP as unknown as {
+  ProtocolError: new (...args: unknown[]) => CdpProtocolError;
+}).ProtocolError;
+
 // Hidden targets (e.g. the Perplexity sidecar panel) can report a 0x0 layout
 // viewport in some Comet window states (cold launch, no real browsing tabs in
 // front). When that happens, Page.captureScreenshot waits for compositor
@@ -72,8 +85,17 @@ export async function captureScreenshotWithFallback(
     if (!v?.clientWidth && !v?.clientHeight) {
       clip = SCREENSHOT_FALLBACK_CLIP;
     }
-  } catch {
-    clip = SCREENSHOT_FALLBACK_CLIP;
+  } catch (err) {
+    // Chrome-side rejection (e.g. method unsupported on a non-page target):
+    // apply the fallback so captureScreenshot can still produce a frame.
+    // Anything else (websocket dropped, unexpected throw): propagate — the
+    // next CDP call would fail the same way, and masking with a synthetic
+    // 1280x800 capture would hide a real transport-level failure.
+    if (err instanceof ProtocolError) {
+      clip = SCREENSHOT_FALLBACK_CLIP;
+    } else {
+      throw err;
+    }
   }
 
   const result = await page.captureScreenshot({
