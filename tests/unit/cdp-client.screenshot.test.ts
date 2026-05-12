@@ -1,0 +1,139 @@
+import { describe, it, expect } from "vitest";
+import { captureScreenshotWithFallback } from "../../src/cdp-client.js";
+import { FakeScreenshotPage } from "./fakes/fake-screenshot-page.js";
+
+const FALLBACK_CLIP = {
+  x: 0,
+  y: 0,
+  width: 1280,
+  height: 800,
+  scale: 1,
+};
+
+describe("captureScreenshotWithFallback — normal viewport", () => {
+  it("forwards format and supplies no clip when the cssLayoutViewport is non-zero", async () => {
+    const page = new FakeScreenshotPage();
+    page.setMetrics({ cssLayoutViewport: { clientWidth: 1024, clientHeight: 768 } });
+
+    await captureScreenshotWithFallback(page, "png");
+
+    expect(page.captureScreenshotCalls).toHaveLength(1);
+    expect(page.captureScreenshotCalls[0]).toEqual({ format: "png" });
+  });
+
+  it("falls back to layoutViewport when cssLayoutViewport is missing", async () => {
+    const page = new FakeScreenshotPage();
+    page.setMetrics({ layoutViewport: { clientWidth: 800, clientHeight: 600 } });
+
+    await captureScreenshotWithFallback(page, "png");
+
+    expect(page.captureScreenshotCalls[0]).toEqual({ format: "png" });
+  });
+
+  it("forwards jpeg format unchanged", async () => {
+    const page = new FakeScreenshotPage();
+    page.setMetrics({ cssLayoutViewport: { clientWidth: 1024, clientHeight: 768 } });
+
+    await captureScreenshotWithFallback(page, "jpeg");
+
+    expect(page.captureScreenshotCalls[0]).toEqual({ format: "jpeg" });
+  });
+
+  it("calls bringToFront before capture (best-effort)", async () => {
+    const page = new FakeScreenshotPage();
+    await captureScreenshotWithFallback(page, "png");
+    expect(page.bringToFrontCalls).toBe(1);
+  });
+});
+
+describe("captureScreenshotWithFallback — degenerate viewport", () => {
+  it("supplies the fallback clip + captureBeyondViewport when viewport is 0×0", async () => {
+    const page = new FakeScreenshotPage();
+    page.setMetrics({ cssLayoutViewport: { clientWidth: 0, clientHeight: 0 } });
+
+    await captureScreenshotWithFallback(page, "png");
+
+    expect(page.captureScreenshotCalls[0]).toEqual({
+      format: "png",
+      captureBeyondViewport: true,
+      clip: FALLBACK_CLIP,
+    });
+  });
+
+  // The wrapper treats any zero dimension as degenerate (`||` semantics).
+  // This is defensive: a 0×N or N×0 viewport can't produce a useful
+  // screenshot anyway, so falling back to a real frame is preferable to
+  // returning a zero-pixel image.
+  it("supplies the fallback clip when width is 0 but height is non-zero", async () => {
+    const page = new FakeScreenshotPage();
+    page.setMetrics({ cssLayoutViewport: { clientWidth: 0, clientHeight: 800 } });
+
+    await captureScreenshotWithFallback(page, "png");
+
+    expect(page.captureScreenshotCalls[0]).toEqual({
+      format: "png",
+      captureBeyondViewport: true,
+      clip: FALLBACK_CLIP,
+    });
+  });
+
+  it("supplies the fallback clip when height is 0 but width is non-zero", async () => {
+    const page = new FakeScreenshotPage();
+    page.setMetrics({ cssLayoutViewport: { clientWidth: 1024, clientHeight: 0 } });
+
+    await captureScreenshotWithFallback(page, "png");
+
+    expect(page.captureScreenshotCalls[0]).toEqual({
+      format: "png",
+      captureBeyondViewport: true,
+      clip: FALLBACK_CLIP,
+    });
+  });
+
+  it("supplies the fallback clip when getLayoutMetrics throws", async () => {
+    const page = new FakeScreenshotPage();
+    page.setMetricsToThrow();
+
+    await captureScreenshotWithFallback(page, "png");
+
+    expect(page.captureScreenshotCalls[0]).toEqual({
+      format: "png",
+      captureBeyondViewport: true,
+      clip: FALLBACK_CLIP,
+    });
+  });
+
+  it("supplies the fallback clip when both viewport fields are absent", async () => {
+    const page = new FakeScreenshotPage();
+    page.setMetrics({});
+
+    await captureScreenshotWithFallback(page, "png");
+
+    expect(page.captureScreenshotCalls[0]).toEqual({
+      format: "png",
+      captureBeyondViewport: true,
+      clip: FALLBACK_CLIP,
+    });
+  });
+});
+
+describe("captureScreenshotWithFallback — error handling", () => {
+  it("swallows bringToFront errors and continues to capture", async () => {
+    const page = new FakeScreenshotPage();
+    page.setBringToFrontToThrow();
+
+    const result = await captureScreenshotWithFallback(page, "png");
+
+    expect(page.captureScreenshotCalls).toHaveLength(1);
+    expect(result.data).toBeTruthy();
+  });
+
+  it("throws a descriptive error when captureScreenshot returns empty data", async () => {
+    const page = new FakeScreenshotPage();
+    page.setScreenshotData(undefined);
+
+    await expect(captureScreenshotWithFallback(page, "png")).rejects.toThrow(
+      /empty data/i,
+    );
+  });
+});
