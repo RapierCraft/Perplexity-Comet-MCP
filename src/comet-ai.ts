@@ -53,22 +53,30 @@ export class CometAI {
       throw new Error("Could not find input element. Navigate to Perplexity first.");
     }
 
-    // Use execCommand for contenteditable elements (works with React/Vue)
+    // Use the actually-matched selector. The previous implementation
+    // discarded `inputSelector` and tried `[contenteditable="true"]`
+    // unconditionally, so on pages where the real input was a
+    // `<textarea>` *and* a different unrelated `contenteditable` (e.g.
+    // a hidden search box) was also present, focus / typing landed on
+    // the wrong element. Routing through the selector that the
+    // discovery loop actually matched fixes that.
+    const safeSelector = JSON.stringify(inputSelector);
+    const safePrompt = JSON.stringify(prompt);
     const result = await cometClient.evaluate(`
       (() => {
-        const el = document.querySelector('[contenteditable="true"]');
-        if (el) {
-          el.focus();
+        const el = document.querySelector(${safeSelector});
+        if (!el) return { success: false };
+        el.focus();
+        // contenteditable path: execCommand keeps React's input bindings happy.
+        if (el.isContentEditable) {
           document.execCommand('selectAll', false, null);
-          document.execCommand('insertText', false, ${JSON.stringify(prompt)});
+          document.execCommand('insertText', false, ${safePrompt});
           return { success: true };
         }
-        // Fallback for textarea
-        const textarea = document.querySelector('textarea');
-        if (textarea) {
-          textarea.focus();
-          textarea.value = ${JSON.stringify(prompt)};
-          textarea.dispatchEvent(new Event('input', { bubbles: true }));
+        // Form-control path: set value + fire input event.
+        if ('value' in el) {
+          el.value = ${safePrompt};
+          el.dispatchEvent(new Event('input', { bubbles: true }));
           return { success: true };
         }
         return { success: false };
@@ -226,12 +234,20 @@ export class CometAI {
 
     await new Promise(resolve => setTimeout(resolve, 500));
 
-    // Final verification and last resort
+    // Final verification and last resort.
+    // The previous check used `[class*="animate"]` which matches
+    // Perplexity's permanently-animated logo (`animate-pulse` on the
+    // brand mark) — so `hasLoading` was effectively always true on
+    // every Perplexity page, and the `form.submit()` last-resort
+    // branch below never fired. Tighten to genuine progress
+    // indicators (`animate-spin`, `loading`, `thinking`).
     const finalCheck = await cometClient.evaluate(`
       (() => {
         const el = document.querySelector('[contenteditable="true"]');
         if (el && el.innerText.trim().length < 5) return true;
-        const hasLoading = document.querySelector('[class*="animate"]') !== null;
+        const hasLoading = document.querySelector(
+          '[class*="animate-spin"], [class*="loading"], [class*="thinking"]'
+        ) !== null;
         const hasThinking = document.body.innerText.includes('Thinking');
         return hasLoading || hasThinking;
       })()
@@ -250,13 +266,23 @@ export class CometAI {
     }
   }
 
-  // Track response stability for completion detection
+  // Track response stability for completion detection.
+  // Semantics: returns `true` once the same response has been observed
+  // for `STABLE_REPEATS_REQUIRED` consecutive polls AFTER the first
+  // sighting. So with the default 2: call 1 records the value (false),
+  // call 2 matches (count=1, false), call 3 matches (count=2, true).
+  // Effectively "the response has not changed across the last 3 polls".
+  // The previous comment claimed "same for 2 checks" which was off by
+  // one; renaming the constant to match what the code actually does.
   private lastResponseText: string = '';
   private stableResponseCount: number = 0;
-  private readonly STABILITY_THRESHOLD: number = 2; // Response must be same for 2 checks
+  private readonly STABLE_REPEATS_REQUIRED: number = 2;
 
   /**
-   * Check if response has stabilized (same content for multiple polls)
+   * Check if response has stabilized.
+   *
+   * Returns `true` once the response text has been observed unchanged
+   * for `STABLE_REPEATS_REQUIRED + 1` consecutive polls.
    */
   isResponseStable(currentResponse: string): boolean {
     if (currentResponse && currentResponse.length > 50) {
@@ -266,7 +292,7 @@ export class CometAI {
         this.stableResponseCount = 0;
         this.lastResponseText = currentResponse;
       }
-      return this.stableResponseCount >= this.STABILITY_THRESHOLD;
+      return this.stableResponseCount >= this.STABLE_REPEATS_REQUIRED;
     }
     return false;
   }
