@@ -70,8 +70,17 @@ export function extractAgentStatus(): AgentStatusResult {
   // miss completion on non-English accounts and force fallback to slow
   // response-stability polling (~90s). See PR #9 notes for marker source.
   const hasStepsCompleted = /\d+ steps? completed/i.test(body)
-                         || /Выполнено\s+\d+\s+шаг(?:а|ов)?/iu.test(body); // ru
-  const hasFinishedMarker = body.includes("Finished") && !hasActiveStopButton;
+                         // Russian agrees the verb with grammatical number:
+                         //   "Выполнен 1 шаг" (sg), "Выполнено 2/3/4 шага",
+                         //   "Выполнено 5+ шагов". The previous regex matched
+                         //   only "Выполнено …" and missed the singular case.
+                         || /Выполнен(?:о|ы)?\s+\d+\s+шаг(?:а|ов)?/iu.test(body); // ru
+  // Word-boundary the English marker and exclude "Finished reading|analyzing|…",
+  // which is an *intermediate* step Perplexity renders while the agent is
+  // still running. Without this, the agent flips to "completed" the moment
+  // the first source is processed.
+  const hasFinishedMarker = /\bFinished\b(?!\s+(?:reading|analyzing|browsing|searching|loading))/i.test(body)
+                          && !hasActiveStopButton;
   const hasReviewedSources = /Reviewed \d+ sources?/i.test(body);
   const hasSourcesIndicator = /\d+\s*sources?/i.test(body)              // en
                            || /\d+\s*источник(?:а|ов)?/iu.test(body);    // ru
@@ -138,10 +147,17 @@ export function extractAgentStatus(): AgentStatusResult {
     const mainContent = (document.querySelector("main") || document.body) as HTMLElement;
     const bodyText = mainContent.innerText;
 
-    // Strategy 1: Find content after "X steps completed" marker (agent's final response)
-    const stepsMatch = bodyText.match(/(\d+)\s*steps?\s*completed/i);
+    // Strategy 1: Find content after "X steps completed" marker (agent's final response).
+    // In multi-turn chats Perplexity keeps previous-turn markers in the
+    // scroll buffer, and the marker text differs across turns ("3 steps
+    // completed" vs "5 steps completed"). `match()` returns only the
+    // FIRST match, so anchoring on it — with either `indexOf` or
+    // `lastIndexOf` of that exact string — lands on the OLDEST turn.
+    // Walk every match with the /g flag and take the last one.
+    const stepsMatches = [...bodyText.matchAll(/(\d+)\s*steps?\s*completed/gi)];
+    const stepsMatch = stepsMatches.length > 0 ? stepsMatches[stepsMatches.length - 1] : null;
     if (stepsMatch) {
-      const markerIndex = bodyText.indexOf(stepsMatch[0]);
+      const markerIndex = stepsMatch.index ?? -1;
       if (markerIndex !== -1) {
         // Get everything after the marker
         let afterMarker = bodyText.substring(markerIndex + stepsMatch[0].length).trim();
@@ -168,9 +184,11 @@ export function extractAgentStatus(): AgentStatusResult {
 
     // Strategy 2: If no steps marker, look for content after source citations
     if (!response || response.length < 50) {
-      const sourcesMatch = bodyText.match(/Reviewed\s+\d+\s+sources?/i);
+      // Same rationale as Strategy 1: walk every match and take the last.
+      const sourcesMatches = [...bodyText.matchAll(/Reviewed\s+\d+\s+sources?/gi)];
+      const sourcesMatch = sourcesMatches.length > 0 ? sourcesMatches[sourcesMatches.length - 1] : null;
       if (sourcesMatch) {
-        const markerIndex = bodyText.indexOf(sourcesMatch[0]);
+        const markerIndex = sourcesMatch.index ?? -1;
         if (markerIndex !== -1) {
           let afterMarker = bodyText.substring(markerIndex + sourcesMatch[0].length).trim();
           const endMarkers = [

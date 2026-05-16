@@ -82,6 +82,68 @@ describe("extractAgentStatus", () => {
     expect(result.response.length).toBeGreaterThan(0);
   });
 
+  it("returns 'completed' for Russian singular 'Выполнен 1 шаг'", () => {
+    const main = document.createElement("main");
+    const m = document.createElement("div");
+    m.textContent = "Выполнен 1 шаг";
+    const p = document.createElement("div");
+    p.className = "prose";
+    p.textContent = "Готовый ответ агента, длина превышает 15 символов.";
+    main.append(m, p);
+    document.body.append(main);
+
+    const result = extractAgentStatus();
+    expect(result.status).toBe("completed");
+  });
+
+  it("returns 'completed' for Russian plural 'Выполнено 5 шагов'", () => {
+    const main = document.createElement("main");
+    const m = document.createElement("div");
+    m.textContent = "Выполнено 5 шагов";
+    const p = document.createElement("div");
+    p.className = "prose";
+    p.textContent = "Готовый ответ агента, длина превышает 15 символов.";
+    main.append(m, p);
+    document.body.append(main);
+
+    const result = extractAgentStatus();
+    expect(result.status).toBe("completed");
+  });
+
+  it("does NOT treat 'Finished reading sources' as a completion marker", () => {
+    const main = document.createElement("main");
+    const m = document.createElement("div");
+    m.textContent = "Finished reading sources";
+    const btn = document.createElement("button");
+    btn.setAttribute("aria-label", "Stop");
+    btn.textContent = "stop";
+    main.append(m, btn);
+    document.body.append(main);
+    markVisible(btn);
+
+    const result = extractAgentStatus();
+    // Stop button visible -> still working, regardless of "Finished reading".
+    expect(result.status).toBe("working");
+  });
+
+  it("picks the response after the LAST 'steps completed' marker", () => {
+    // Multi-turn chat: the older turn's marker must NOT win over the newer one.
+    const main = document.createElement("main");
+    const turn1 = document.createElement("div");
+    turn1.textContent =
+      "3 steps completed Previous turn answer text here, long enough to exceed thresholds easily. Ask anything";
+    const turn2 = document.createElement("div");
+    turn2.textContent =
+      "5 steps completed New turn answer that we actually want returned to the caller. Ask a follow-up";
+    main.append(turn1, turn2);
+    document.body.append(main);
+
+    const result = extractAgentStatus();
+    expect(result.status).toBe("completed");
+    expect(result.response).toContain("New turn answer");
+    expect(result.response).not.toContain("Previous turn answer");
+  });
+
   it("extracts and dedupes step descriptions matching the working patterns", () => {
     // Pattern matching runs against document.body.innerText.
     // Use one step per <div> so jsdom's innerText emits one per line.
