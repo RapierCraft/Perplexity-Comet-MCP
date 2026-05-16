@@ -348,7 +348,17 @@ export class CometCDPClient {
   private lastTargetId: string | undefined;
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 10;
-  private isReconnecting: boolean = false;
+  // In-flight reconnect promise. Multiple concurrent operations entering
+  // `withAutoReconnect` after a transport drop must NOT each kick off
+  // their own reconnect — they would race on `this.client` (one closes
+  // while another is mid-handshake), corrupting state. We cache the
+  // single promise and let all waiters await it.
+  private reconnectPromise: Promise<void> | null = null;
+  // Consecutive successful operations since the last connection error.
+  // Used to reset the attempt counter only after the connection has
+  // proven stable, so a flapping link doesn't silently bypass the
+  // max-attempts breaker.
+  private consecutiveSuccesses: number = 0;
   private connectionCheckInterval: NodeJS.Timeout | null = null;
   private lastHealthCheck: number = 0;
   private healthCheckCache: boolean = false;
@@ -444,14 +454,34 @@ export class CometCDPClient {
   /**
    * Auto-reconnect wrapper for operations with exponential backoff
    */
+  /**
+   * Coalesce concurrent reconnect attempts onto a single promise.
+   * Any caller awaiting `ensureSingleReconnect()` either receives the
+   * promise of an already-running reconnect or starts a fresh one.
+   */
+  private ensureSingleReconnect(): Promise<void> {
+    if (!this.reconnectPromise) {
+      const attempt = this.reconnectAttempts;
+      const delay = Math.min(300 * Math.pow(1.3, Math.max(attempt - 1, 0)), 2000);
+      this.reconnectPromise = (async () => {
+        this.invalidateHealthCache();
+        await new Promise(r => setTimeout(r, delay));
+        await this.reconnect();
+      })().finally(() => {
+        this.reconnectPromise = null;
+      });
+    }
+    return this.reconnectPromise;
+  }
+
+  /**
+   * Auto-reconnect wrapper for operations with exponential backoff
+   */
   async withAutoReconnect<T>(operation: () => Promise<T>): Promise<T> {
-    // Wait for ongoing reconnect
-    if (this.isReconnecting) {
-      let waitCount = 0;
-      while (this.isReconnecting && waitCount < 20) {
-        await new Promise(resolve => setTimeout(resolve, 300));
-        waitCount++;
-      }
+    // If a reconnect is already in-flight, wait for it instead of
+    // launching a parallel one.
+    if (this.reconnectPromise) {
+      try { await this.reconnectPromise; } catch { /* fall through to retry */ }
     }
 
     // Pre-operation health check (uses cache for efficiency)
@@ -463,16 +493,23 @@ export class CometCDPClient {
 
     try {
       const result = await operation();
-      this.reconnectAttempts = 0;
+      // Reset attempt counter only after a window of consecutive
+      // successes — a flapping connection that succeeds every Nth try
+      // must not be able to silently bypass the breaker.
+      this.consecutiveSuccesses++;
+      if (this.consecutiveSuccesses >= 3) {
+        this.reconnectAttempts = 0;
+      }
       return result;
     } catch (error: unknown) {
+      this.consecutiveSuccesses = 0;
       const errorMessage = error instanceof Error ? error.message : String(error);
 
       const connectionErrors = [
         'WebSocket', 'CLOSED', 'not open', 'disconnected', 'readyState',
         'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'socket hang up',
         'Protocol error', 'Target closed', 'Session closed', 'Execution context',
-        'not found', 'detached', 'crashed', 'Inspected target navigated', 'aborted'
+        'detached', 'crashed', 'Inspected target navigated', 'aborted'
       ];
 
       const isConnectionError = connectionErrors.some(e =>
@@ -481,26 +518,22 @@ export class CometCDPClient {
 
       if (isConnectionError && this.reconnectAttempts < this.maxReconnectAttempts) {
         this.reconnectAttempts++;
-        this.isReconnecting = true;
-        this.invalidateHealthCache();
 
         try {
-          // Shorter delays for faster recovery
-          const delay = Math.min(300 * Math.pow(1.3, this.reconnectAttempts - 1), 2000);
-          await new Promise(resolve => setTimeout(resolve, delay));
-          await this.reconnect();
-          this.isReconnecting = false;
-          // Retry the operation after reconnect
+          // Coalesce: shared promise across all concurrent callers
+          await this.ensureSingleReconnect();
           return await operation();
         } catch (reconnectError) {
-          this.isReconnecting = false;
           // If reconnect fails, try fresh start
           if (this.reconnectAttempts < this.maxReconnectAttempts) {
             try {
               await this.startComet(this.state.port);
               await new Promise(r => setTimeout(r, 1500));
               const targets = await this.listTargets();
-              const page = targets.find(t => t.type === 'page' && t.url.includes('perplexity'));
+              // Pick main Perplexity tab, NOT the sidecar.
+              const page =
+                targets.find(t => t.type === 'page' && t.url.includes('perplexity') && !t.url.includes('sidecar')) ||
+                targets.find(t => t.type === 'page' && t.url.includes('perplexity'));
               const anyPage = page || targets.find(t => t.type === 'page');
               if (anyPage) {
                 await this.connect(anyPage.id);
@@ -1345,11 +1378,25 @@ export class CometCDPClient {
             throw new Error(result.errorText);
           }
 
-          // Wait for load with timeout
-          await Promise.race([
-            this.client!.Page.loadEventFired(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error('Page load timeout')), 15000))
-          ]);
+          // Wait for load with timeout.
+          // `client.Page.loadEventFired()` resolves on the next event but
+          // leaves the underlying listener registered if the timeout
+          // branch of Promise.race wins. After many timeouts in one
+          // session the listener list grows unbounded. Subscribe via
+          // `client.once` (which auto-unsubscribes after one event) and
+          // explicitly remove the listener when the timeout wins.
+          const client = this.client!;
+          await new Promise<void>((resolve, reject) => {
+            const onLoad = () => {
+              clearTimeout(timer);
+              resolve();
+            };
+            const timer = setTimeout(() => {
+              client.removeListener('Page.loadEventFired', onLoad);
+              reject(new Error('Page load timeout'));
+            }, 15000);
+            client.once('Page.loadEventFired', onLoad);
+          });
 
           this.state.currentUrl = url;
         });
