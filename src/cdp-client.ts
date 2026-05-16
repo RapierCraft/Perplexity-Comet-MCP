@@ -225,6 +225,16 @@ async function getWSLConnectPort(targetPort: number): Promise<number> {
   );
 }
 
+// Escape a string for safe interpolation inside a PowerShell single-quoted
+// literal: only `'` is special — double it to `''`. Also reject embedded
+// NUL or newline characters, which would terminate the command line.
+function psSingleQuote(value: string): string {
+  if (value.includes('\0') || /[\r\n]/.test(value)) {
+    throw new Error('Refusing to pass control characters to PowerShell');
+  }
+  return value.replace(/'/g, "''");
+}
+
 // Windows/WSL-compatible fetch using PowerShell
 // On WSL, native fetch connects to WSL's localhost, not Windows where Comet runs
 async function windowsFetch(url: string, method: string = 'GET'): Promise<{ ok: boolean; status: number; json: () => Promise<any> }> {
@@ -234,11 +244,26 @@ async function windowsFetch(url: string, method: string = 'GET'): Promise<{ ok: 
     return response;
   }
 
+  // Validate URL before passing through PowerShell: must be loopback http(s).
+  // This is the trust boundary — caller-supplied tabIds and ports flow here.
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error(`Unsupported protocol: ${parsed.protocol}`);
+    }
+    if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') {
+      throw new Error(`Refusing non-loopback host: ${parsed.hostname}`);
+    }
+  } catch (e: any) {
+    return { ok: false, status: 0, json: async () => { throw e; } };
+  }
+
   // On Windows or WSL, use PowerShell to reach Windows localhost
   try {
+    const safeUrl = psSingleQuote(url);
     const psCommand = method === 'PUT'
-      ? `Invoke-WebRequest -Uri '${url}' -Method PUT -UseBasicParsing | Select-Object -ExpandProperty Content`
-      : `Invoke-WebRequest -Uri '${url}' -UseBasicParsing | Select-Object -ExpandProperty Content`;
+      ? `Invoke-WebRequest -Uri '${safeUrl}' -Method PUT -UseBasicParsing | Select-Object -ExpandProperty Content`
+      : `Invoke-WebRequest -Uri '${safeUrl}' -UseBasicParsing | Select-Object -ExpandProperty Content`;
 
     const result = execSync(`powershell.exe -NoProfile -Command "${psCommand}"`, {
       encoding: 'utf8',
@@ -927,10 +952,20 @@ export class CometCDPClient {
         cometPath = 'C:\\Users\\' + (process.env.USER || 'user') + '\\AppData\\Local\\Perplexity\\Comet\\Application\\Comet.exe';
       }
 
+      // Validate port + path before interpolating into PowerShell.
+      // %LOCALAPPDATA% on Windows can legally contain `'` (rare but possible),
+      // and `port` is a typed number in TypeScript but the runtime cannot
+      // enforce that — explicit checks guard against shell injection.
+      if (!Number.isInteger(port) || port < 1 || port > 65535) {
+        throw new Error(`Invalid port for Comet launch: ${port}`);
+      }
+      const safeCometPath = psSingleQuote(cometPath);
+      const safePort = String(port);
+
       try {
         // Launch Comet via PowerShell
         // Use Set-Location to avoid UNC path issues when running from WSL
-        const psCommand = `Set-Location C:\\; Start-Process -FilePath '${cometPath}' -ArgumentList '--remote-debugging-port=${port}'`;
+        const psCommand = `Set-Location C:\\; Start-Process -FilePath '${safeCometPath}' -ArgumentList '--remote-debugging-port=${safePort}'`;
         spawn('powershell.exe', ['-NoProfile', '-Command', psCommand], {
           detached: true,
           stdio: 'ignore',
@@ -1465,10 +1500,11 @@ export class CometCDPClient {
         });
 
         // Trigger change event to notify the page
+        const safeSelector = JSON.stringify(selector || 'input[type="file"]');
         await this.client!.Runtime.evaluate({
           expression: `
             (function() {
-              const input = document.querySelector('${selector || 'input[type="file"]'}');
+              const input = document.querySelector(${safeSelector});
               if (input) {
                 input.dispatchEvent(new Event('change', { bubbles: true }));
                 input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1524,10 +1560,11 @@ export class CometCDPClient {
         });
 
         // Trigger change event
+        const safeSel = JSON.stringify(sel);
         await this.client!.Runtime.evaluate({
           expression: `
             (function() {
-              const input = document.querySelector('${sel}');
+              const input = document.querySelector(${safeSel});
               if (input) {
                 input.dispatchEvent(new Event('change', { bubbles: true }));
                 input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -1593,11 +1630,12 @@ export class CometCDPClient {
       this.ensureConnected();
 
       const sel = selector || 'input[type="file"]';
+      const safeSel = JSON.stringify(sel);
 
       const result = await this.client!.Runtime.evaluate({
         expression: `
           (function() {
-            const input = document.querySelector('${sel}');
+            const input = document.querySelector(${safeSel});
             if (input) {
               input.click();
               return { clicked: true };
