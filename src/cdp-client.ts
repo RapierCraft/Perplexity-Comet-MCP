@@ -15,6 +15,103 @@ import type {
   TabContext,
 } from "./types.js";
 
+// chrome-remote-interface@^0.34.0 exposes `ProtocolError` at runtime
+// (`module.exports.ProtocolError = ...`), but @types/chrome-remote-interface
+// doesn't declare it yet. Cast at import so `instanceof` typechecks; remove
+// the cast once DefinitelyTyped/DefinitelyTyped#74992 lands and we pick up
+// the updated @types.
+interface CdpProtocolError extends Error {
+  request: { method: string; params?: unknown };
+  response: CDP.SendError;
+}
+const ProtocolError = (CDP as unknown as {
+  ProtocolError: new (...args: unknown[]) => CdpProtocolError;
+}).ProtocolError;
+
+// Hidden targets (e.g. the Perplexity sidecar panel) can report a 0x0 layout
+// viewport in some Comet window states (cold launch, no real browsing tabs in
+// front). When that happens, Page.captureScreenshot waits for compositor
+// frames that never arrive and stalls for ~2 minutes. Detecting that state
+// via Page.getLayoutMetrics() and supplying an explicit clip +
+// captureBeyondViewport=true makes the renderer produce a frame immediately.
+//
+// The predicate is intentionally tight: both dimensions must be zero. Live
+// CDP testing confirmed that 0x0 is the only reproducible viewport state
+// that triggers the stall — Chromium's Emulation.setDeviceMetricsOverride
+// rejects single-zero dimensions and falls back to the natural viewport,
+// and the natural 0x0 case is "no layout computed yet" (an all-or-nothing
+// state). A 0xN or Nx0 viewport is not a state we can observe in practice.
+const SCREENSHOT_FALLBACK_CLIP = {
+  x: 0,
+  y: 0,
+  width: 1280,
+  height: 800,
+  scale: 1,
+} as const;
+
+/**
+ * The slice of the CDP Page domain that `captureScreenshotWithFallback` uses.
+ * Lets unit tests substitute a hand-written fake without dragging in the full
+ * `chrome-remote-interface` Page surface.
+ */
+export interface ScreenshotPageAPI {
+  bringToFront(): Promise<unknown>;
+  getLayoutMetrics(): Promise<{
+    cssLayoutViewport?: { clientWidth: number; clientHeight: number };
+    layoutViewport?: { clientWidth: number; clientHeight: number };
+  }>;
+  captureScreenshot(opts: {
+    format: "png" | "jpeg";
+    captureBeyondViewport?: boolean;
+    clip?: typeof SCREENSHOT_FALLBACK_CLIP;
+  }): Promise<ScreenshotResult>;
+}
+
+/**
+ * Capture a screenshot, falling back to an explicit clip when the layout
+ * viewport is degenerate. Extracted as a free function so it can be unit
+ * tested against a fake Page without a live CDP connection.
+ */
+export async function captureScreenshotWithFallback(
+  page: ScreenshotPageAPI,
+  format: "png" | "jpeg" = "png",
+): Promise<ScreenshotResult> {
+  try { await page.bringToFront(); } catch { /* not all targets support it */ }
+
+  let clip: typeof SCREENSHOT_FALLBACK_CLIP | undefined;
+  try {
+    const metrics = await page.getLayoutMetrics();
+    const v = metrics.cssLayoutViewport ?? metrics.layoutViewport;
+    if (!v?.clientWidth && !v?.clientHeight) {
+      clip = SCREENSHOT_FALLBACK_CLIP;
+    }
+  } catch (err) {
+    // Chrome-side rejection (e.g. method unsupported on a non-page target):
+    // apply the fallback so captureScreenshot can still produce a frame.
+    // Anything else (websocket dropped, unexpected throw): propagate — the
+    // next CDP call would fail the same way, and masking with a synthetic
+    // 1280x800 capture would hide a real transport-level failure.
+    if (err instanceof ProtocolError) {
+      clip = SCREENSHOT_FALLBACK_CLIP;
+    } else {
+      throw err;
+    }
+  }
+
+  const result = await page.captureScreenshot({
+    format,
+    ...(clip ? { captureBeyondViewport: true, clip } : {}),
+  });
+
+  if (!result?.data) {
+    throw new Error(
+      "Screenshot returned empty data. Ensure you're connected to a visible tab with content.",
+    );
+  }
+
+  return result;
+}
+
 // Detect if running in WSL (must be before windowsFetch)
 function isWSL(): boolean {
   if (platform() !== 'linux') return false;
@@ -1112,7 +1209,7 @@ export class CometCDPClient {
    */
   async screenshot(format: "png" | "jpeg" = "png"): Promise<ScreenshotResult> {
     this.ensureConnected();
-    return this.client!.Page.captureScreenshot({ format }) as Promise<ScreenshotResult>;
+    return captureScreenshotWithFallback(this.client!.Page, format);
   }
 
   /**
