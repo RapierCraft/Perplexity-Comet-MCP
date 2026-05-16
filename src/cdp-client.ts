@@ -112,6 +112,63 @@ export async function captureScreenshotWithFallback(
   return result;
 }
 
+/** Per-frame lifecycle accumulator: frameId -> { current loaderId, event names seen }. */
+export type FrameLifecycleMap = Map<string, { loaderId: string; events: Set<string> }>;
+
+/**
+ * The slice of the CDP Page domain that `waitForLifecycle` uses. The return
+ * type of `lifecycleEvent(handler)` is CRI's unsubscribe function — api.js:49
+ * returns `() => chrome.removeListener(rawEventName, handler)`.
+ */
+export interface LifecyclePageAPI {
+  lifecycleEvent(handler: (params: { name?: string }) => void): () => unknown;
+}
+
+/**
+ * Wait until any frame in `frameLifecycle` has fired the named
+ * Page.lifecycleEvent (e.g. 'firstContentfulPaint', 'networkAlmostIdle').
+ * Resolves true if the event is in the cache or arrives before the timeout;
+ * false otherwise. Cleans up its listener and timer on every exit path.
+ *
+ * Defensive ordering: the listener is registered *before* scanning the
+ * cache, so even if the event arrived on an I/O turn between calls it's
+ * caught by the live listener rather than missed. Single-threaded JS makes
+ * the synchronous-only path safe today, but the order matters if anything
+ * upstream (CRI internals, scheduler) ever inserts a microtask here.
+ *
+ * Extracted as a free function so it can be unit tested against a fake
+ * Page + map without a live CDP connection.
+ */
+export function waitForLifecycle(
+  page: LifecyclePageAPI,
+  frameLifecycle: FrameLifecycleMap,
+  eventName: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let done = false;
+    let unsubscribe: (() => unknown) | null = null;
+    let timer: NodeJS.Timeout | null = null;
+    const finish = (val: boolean) => {
+      if (done) return;
+      done = true;
+      if (unsubscribe) { try { unsubscribe(); } catch { /* ignore */ } }
+      if (timer) clearTimeout(timer);
+      resolve(val);
+    };
+    const listener = (params: { name?: string }) => {
+      if (params?.name === eventName) finish(true);
+    };
+    try {
+      unsubscribe = page.lifecycleEvent(listener);
+    } catch { finish(false); return; }
+    for (const { events } of frameLifecycle.values()) {
+      if (events.has(eventName)) { finish(true); return; }
+    }
+    timer = setTimeout(() => finish(false), timeoutMs);
+  });
+}
+
 // Detect if running in WSL (must be before windowsFetch)
 function isWSL(): boolean {
   if (platform() !== 'linux') return false;
@@ -260,6 +317,13 @@ export class CometCDPClient {
 
   // Tab context registry for multi-tab workflow awareness
   private tabRegistry: Map<string, TabContext> = new Map();
+
+  // Page lifecycle tracking — events accumulated per frame for the current
+  // document (loaderId). Used by waitForLifecycle() so screenshots and other
+  // ops can confirm the renderer has actually painted before they run.
+  private frameLifecycle: FrameLifecycleMap = new Map();
+  private lifecycleListener: ((params: any) => void) | null = null;
+  private lifecycleUnsubscribe: (() => unknown) | null = null;
 
   get isConnected(): boolean {
     return this.state.connected && this.client !== null;
@@ -1121,6 +1185,33 @@ export class CometCDPClient {
       } catch { /* continue */ }
     }
 
+    // Subscribe to Page.lifecycleEvent so we can wait for paint readiness
+    // (firstContentfulPaint, networkAlmostIdle, etc.) the way Lighthouse and
+    // Puppeteer do, instead of polling document.readyState.
+    this.frameLifecycle.clear();
+    if (this.lifecycleUnsubscribe) {
+      try { this.lifecycleUnsubscribe(); } catch { /* ignore */ }
+      this.lifecycleUnsubscribe = null;
+    }
+    this.lifecycleListener = null;
+    try {
+      await this.client.Page.setLifecycleEventsEnabled({ enabled: true });
+      this.lifecycleListener = (params: any) => {
+        const { frameId, loaderId, name } = params || {};
+        if (!frameId || !loaderId || !name) return;
+        const existing = this.frameLifecycle.get(frameId);
+        if (!existing || existing.loaderId !== loaderId) {
+          this.frameLifecycle.set(frameId, { loaderId, events: new Set([name]) });
+        } else {
+          existing.events.add(name);
+        }
+      };
+      // chrome-remote-interface's domain event callbacks return an unsubscribe
+      // function (api.js: `() => chrome.removeListener(rawEventName, handler)`).
+      // Capture it so disconnect() can deregister cleanly.
+      this.lifecycleUnsubscribe = this.client.Page.lifecycleEvent(this.lifecycleListener);
+    } catch { /* lifecycle tracking is best-effort */ }
+
     this.state.connected = true;
     this.state.activeTabId = targetId;
     this.lastTargetId = targetId;
@@ -1136,6 +1227,12 @@ export class CometCDPClient {
    * Disconnect from current tab
    */
   async disconnect(): Promise<void> {
+    if (this.lifecycleUnsubscribe) {
+      try { this.lifecycleUnsubscribe(); } catch { /* ignore */ }
+      this.lifecycleUnsubscribe = null;
+    }
+    this.lifecycleListener = null;
+    this.frameLifecycle.clear();
     if (this.client) {
       await this.client.close();
       this.client = null;
@@ -1209,6 +1306,12 @@ export class CometCDPClient {
    */
   async screenshot(format: "png" | "jpeg" = "png"): Promise<ScreenshotResult> {
     this.ensureConnected();
+
+    // Wait for paint readiness via Page.lifecycleEvent (Lighthouse/Puppeteer
+    // approach). If firstContentfulPaint already fired for this document the
+    // call returns synchronously; otherwise we wait up to 2s for the next FCP.
+    await waitForLifecycle(this.client!.Page, this.frameLifecycle, 'firstContentfulPaint', 2000);
+
     return captureScreenshotWithFallback(this.client!.Page, format);
   }
 
