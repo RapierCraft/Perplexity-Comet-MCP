@@ -338,6 +338,22 @@ function readPortFromEnv(): number {
 }
 export const DEFAULT_PORT = readPortFromEnv();
 
+/**
+ * Build the args list passed to the Comet binary. Always includes
+ * `--remote-allow-origins=http://127.0.0.1` so other processes on the
+ * host (which can resolve `localhost.<attacker>.com` -> 127.0.0.1 via
+ * DNS rebinding from a browser they control) cannot attach to Comet's
+ * unauthenticated CDP endpoint and steal cookies / read tabs.
+ *
+ * See https://crbug.com/1247276 for the underlying mitigation.
+ */
+function cometLaunchArgs(port: number): string[] {
+  return [
+    `--remote-debugging-port=${port}`,
+    `--remote-allow-origins=http://127.0.0.1`,
+  ];
+}
+
 export class CometCDPClient {
   private client: CDP.Client | null = null;
   private cometProcess: ChildProcess | null = null;
@@ -359,7 +375,6 @@ export class CometCDPClient {
   // proven stable, so a flapping link doesn't silently bypass the
   // max-attempts breaker.
   private consecutiveSuccesses: number = 0;
-  private connectionCheckInterval: NodeJS.Timeout | null = null;
   private lastHealthCheck: number = 0;
   private healthCheckCache: boolean = false;
   private readonly HEALTH_CHECK_CACHE_MS: number = 2000; // Cache health check for 2s
@@ -1026,12 +1041,17 @@ export class CometCDPClient {
         throw new Error(`Invalid port for Comet launch: ${port}`);
       }
       const safeCometPath = psSingleQuote(cometPath);
-      const safePort = String(port);
 
       try {
-        // Launch Comet via PowerShell
-        // Use Set-Location to avoid UNC path issues when running from WSL
-        const psCommand = `Set-Location C:\\; Start-Process -FilePath '${safeCometPath}' -ArgumentList '--remote-debugging-port=${safePort}'`;
+        // Launch Comet via PowerShell.
+        // Use Set-Location to avoid UNC path issues when running from WSL.
+        // ArgumentList is comma-separated entries inside the single-quoted
+        // string, then PowerShell turns that into separate argv elements
+        // for Comet itself. Match the args produced by cometLaunchArgs().
+        const launchArgs = cometLaunchArgs(port)
+          .map(a => `'${a.replace(/'/g, "''")}'`)
+          .join(',');
+        const psCommand = `Set-Location C:\\; Start-Process -FilePath '${safeCometPath}' -ArgumentList ${launchArgs}`;
         spawn('powershell.exe', ['-NoProfile', '-Command', psCommand], {
           detached: true,
           stdio: 'ignore',
@@ -1085,7 +1105,7 @@ export class CometCDPClient {
         const isRunning = await this.isCometProcessRunning();
         if (!isRunning) {
           // Start Comet
-          this.cometProcess = spawn(COMET_PATH, [`--remote-debugging-port=${port}`], {
+          this.cometProcess = spawn(COMET_PATH, cometLaunchArgs(port), {
             detached: true,
             stdio: "ignore",
           });
@@ -1119,7 +1139,7 @@ export class CometCDPClient {
           await this.killComet();
           await new Promise(r => setTimeout(r, 1000));
 
-          this.cometProcess = spawn(COMET_PATH, [`--remote-debugging-port=${port}`], {
+          this.cometProcess = spawn(COMET_PATH, cometLaunchArgs(port), {
             detached: true,
             stdio: "ignore",
           });
@@ -1168,7 +1188,7 @@ export class CometCDPClient {
 
     // Start Comet
     return new Promise((resolve, reject) => {
-      this.cometProcess = spawn(COMET_PATH, [`--remote-debugging-port=${port}`], {
+      this.cometProcess = spawn(COMET_PATH, cometLaunchArgs(port), {
         detached: true,
         stdio: "ignore",
       });
@@ -1348,10 +1368,34 @@ export class CometCDPClient {
   }
 
   /**
+   * Validate a target URL before passing it to Page.navigate.
+   *
+   * Allow only `http:` and `https:`. Reject:
+   *   - `javascript:` / `data:` / `vbscript:` — XSS-equivalent inside the
+   *     active Comet tab
+   *   - `file://` — local filesystem read
+   *   - `chrome:`, `devtools:`, `view-source:`, `about:` — internal pages;
+   *     `Page.navigate` to these often crashes the CDP session
+   *   - empty / unparseable strings
+   */
+  private assertNavigableUrl(url: string): void {
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new Error(`Invalid URL: ${url}`);
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error(`Refusing navigation to non-http(s) URL: ${parsed.protocol}`);
+    }
+  }
+
+  /**
    * Navigate to a URL
    */
   async navigate(url: string, waitForLoad: boolean = true): Promise<NavigateResult> {
     this.ensureConnected();
+    this.assertNavigableUrl(url);
     const result = await this.client!.Page.navigate({ url });
     if (waitForLoad) await this.client!.Page.loadEventFired();
     this.state.currentUrl = url;
@@ -1366,6 +1410,12 @@ export class CometCDPClient {
    */
   async navigateWithRetry(url: string, maxRetries: number = 3, retryDelay: number = 1000): Promise<{ success: boolean; url: string; attempts: number; error?: string }> {
     let lastError: string = '';
+
+    try {
+      this.assertNavigableUrl(url);
+    } catch (e: any) {
+      return { success: false, url, attempts: 0, error: e.message };
+    }
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
