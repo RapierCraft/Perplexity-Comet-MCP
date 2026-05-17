@@ -22,9 +22,9 @@ beforeEach(() => {
 });
 
 describe("generateTaskId", () => {
-  it("returns a string in the form task_<digits>_<base36>", () => {
+  it("returns a string in the form task_<unix-ms>_<uuid v4>", () => {
     const id = generateTaskId();
-    expect(id).toMatch(/^task_\d+_[0-9a-z]+$/);
+    expect(id).toMatch(/^task_\d+_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   });
 
   it("returns unique ids across rapid successive calls", () => {
@@ -64,7 +64,7 @@ describe("startNewTask", () => {
 
   it("returns a task id that matches the format from generateTaskId", () => {
     const taskId = startNewTask("any");
-    expect(taskId).toMatch(/^task_\d+_[0-9a-z]+$/);
+    expect(taskId).toMatch(/^task_\d+_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   });
 });
 

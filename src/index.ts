@@ -4,7 +4,7 @@
 // Claude Code ↔ Perplexity Comet bidirectional interaction
 // Simplified to 6 essential tools
 
-import { readFileSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -747,9 +747,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: "text", text: "Error: filePath is required" }], isError: true };
         }
 
-        // Check if file exists
-        const fs = await import('fs');
-        if (!fs.existsSync(filePath)) {
+        // Check if file exists (uses top-level import; the previous
+        // `await import('fs')` hit the module cache after the first
+        // call but added an unnecessary microtask on every request).
+        if (!existsSync(filePath)) {
           return { content: [{ type: "text", text: `Error: File not found: ${filePath}` }], isError: true };
         }
 
@@ -798,4 +799,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 const transport = new StdioServerTransport();
-server.connect(transport);
+
+// Connect with explicit error handling. The promise was previously
+// fire-and-forget — if the transport failed to attach (e.g. stdin
+// already closed) the process would silently exit with no logs.
+server.connect(transport).catch((err) => {
+  console.error("[comet-mcp] Failed to connect MCP transport:", err);
+  process.exit(1);
+});
+
+// Graceful shutdown: close the CDP client so the underlying WebSocket
+// to Comet doesn't sit half-open until Comet times it out. SIGINT
+// covers Ctrl+C, SIGTERM covers normal `kill` / orchestrator shutdown.
+//
+// `disconnect()` is racing a 3s timer so a stuck WebSocket can never
+// keep the process alive past Ctrl+C. POSIX exit codes: 128+signum
+// (130 = SIGINT, 143 = SIGTERM).
+async function gracefulShutdown(signal: string): Promise<void> {
+  try {
+    await Promise.race([
+      cometClient.disconnect(),
+      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+    ]);
+  } catch {
+    /* best-effort */
+  }
+  process.exit(signal === "SIGINT" ? 130 : 143);
+}
+process.on("SIGINT", () => { void gracefulShutdown("SIGINT"); });
+process.on("SIGTERM", () => { void gracefulShutdown("SIGTERM"); });

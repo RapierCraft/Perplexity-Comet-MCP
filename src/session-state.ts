@@ -1,5 +1,6 @@
 // Session state for tracking task progress and preventing stale responses
 
+import { randomUUID } from "crypto";
 import { cometAI } from "./comet-ai.js";
 
 export interface SessionState {
@@ -23,7 +24,12 @@ export const sessionState: SessionState = {
 };
 
 export function generateTaskId(): string {
-  return `task_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  // crypto.randomUUID gives ~122 bits of entropy — no collision risk even
+  // with concurrent callers in the same millisecond. The previous
+  // `Math.random().toString(36).substring(2, 8)` form yielded ~31 bits
+  // and relied on `Date.now()` to disambiguate, which fails under
+  // sub-ms-spaced calls.
+  return `task_${Date.now()}_${randomUUID()}`;
 }
 
 export function startNewTask(prompt: string): string {
