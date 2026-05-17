@@ -1383,9 +1383,19 @@ export class CometCDPClient {
           // leaves the underlying listener registered if the timeout
           // branch of Promise.race wins. After many timeouts in one
           // session the listener list grows unbounded. Subscribe via
-          // `client.once` (which auto-unsubscribes after one event) and
+          // `once` (which auto-unsubscribes after one event) and
           // explicitly remove the listener when the timeout wins.
-          const client = this.client!;
+          //
+          // The CRI Client is an EventEmitter at runtime, but the type
+          // declaration in @types/chrome-remote-interface only exposes
+          // `on(...)` — not `once`/`removeListener`. Cast to a minimal
+          // EventEmitter-shaped surface so this compiles without
+          // pulling in `events` as a value import for a type-only need.
+          interface CdpEmitter {
+            once(event: string, listener: (...args: unknown[]) => void): void;
+            removeListener(event: string, listener: (...args: unknown[]) => void): void;
+          }
+          const client = this.client! as unknown as CdpEmitter;
           await new Promise<void>((resolve, reject) => {
             const onLoad = () => {
               clearTimeout(timer);
