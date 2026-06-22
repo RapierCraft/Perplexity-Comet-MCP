@@ -5,6 +5,7 @@ import CDP from "chrome-remote-interface";
 import { spawn, ChildProcess, execSync } from "child_process";
 import { platform } from "os";
 import { existsSync } from "fs";
+import { validateUploadPath } from "./upload-validator.js";
 import type {
   CDPTarget,
   CDPVersion,
@@ -1579,6 +1580,21 @@ export class CometCDPClient {
     return this.withAutoReconnect(async () => {
       this.ensureConnected();
 
+      // Validate and resolve the path before touching the DOM.
+      // This enforces COMET_UPLOAD_ROOT allowlist (if set) and the sensitive-
+      // path denylist at the CDP layer so every caller is protected, not just
+      // the MCP tool handler in index.ts.
+      let resolvedPath: string;
+      try {
+        resolvedPath = validateUploadPath(filePath);
+      } catch (err: unknown) {
+        return {
+          success: false,
+          message: err instanceof Error ? err.message : String(err),
+          inputFound: false,
+        };
+      }
+
       // Find the file input element
       let nodeId: number;
 
@@ -1637,11 +1653,11 @@ export class CometCDPClient {
         }
       }
 
-      // Set the file on the input element
+      // Set the file on the input element using the validated canonical path.
       try {
         await this.client!.DOM.setFileInputFiles({
           nodeId: nodeId!,
-          files: [filePath]
+          files: [resolvedPath]
         });
 
         // Trigger change event to notify the page
@@ -1660,7 +1676,7 @@ export class CometCDPClient {
 
         return {
           success: true,
-          message: `File uploaded successfully: ${filePath}`,
+          message: `File uploaded successfully: ${resolvedPath}`,
           inputFound: true
         };
       } catch (error: any) {
@@ -1683,6 +1699,19 @@ export class CometCDPClient {
     return this.withAutoReconnect(async () => {
       this.ensureConnected();
 
+      // Validate all paths before touching the DOM.
+      const resolvedPaths: string[] = [];
+      for (const fp of filePaths) {
+        try {
+          resolvedPaths.push(validateUploadPath(fp));
+        } catch (err: unknown) {
+          return {
+            success: false,
+            message: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }
+
       const doc = await this.client!.DOM.getDocument();
       const sel = selector || 'input[type="file"]';
 
@@ -1701,7 +1730,7 @@ export class CometCDPClient {
       try {
         await this.client!.DOM.setFileInputFiles({
           nodeId: result.nodeId,
-          files: filePaths
+          files: resolvedPaths
         });
 
         // Trigger change event
