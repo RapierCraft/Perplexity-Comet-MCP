@@ -25,7 +25,7 @@ import { timingSafeEqual } from "crypto";
 import { URL } from "url";
 import { cometClient } from "./cdp-client.js";
 import { cometAI } from "./comet-ai.js";
-import { validateUploadPath, validateTabId } from "./upload-validator.js";
+import { validateUploadPath, validateTabId, validateDomain } from "./upload-validator.js";
 
 // ============================================================================
 // Configuration
@@ -407,12 +407,17 @@ async function handleTabs(args: { action?: string; domain?: string; tabId?: stri
         }
       }
       if (domain) {
+        try {
+          validateDomain(domain);
+        } catch (err: unknown) {
+          return { success: false, content: "", error: err instanceof Error ? err.message : String(err) };
+        }
         const tab = await cometClient.findTabByDomain(domain);
         if (tab) {
           await cometClient.connect(tab.id);
           return { success: true, content: `Switched to ${tab.domain} (${tab.url})` };
         }
-        return { success: false, content: "", error: `No tab found for domain: ${domain}` };
+        return { success: false, content: "", error: "No tab found for the specified domain" };
       }
       return { success: false, content: "", error: "Specify domain or tabId to switch" };
     }
@@ -434,6 +439,11 @@ async function handleTabs(args: { action?: string; domain?: string; tabId?: stri
         }
       }
       if (domain) {
+        try {
+          validateDomain(domain);
+        } catch (err: unknown) {
+          return { success: false, content: "", error: err instanceof Error ? err.message : String(err) };
+        }
         const tab = await cometClient.findTabByDomain(domain);
         if (tab && tab.purpose !== 'main') {
           const success = await cometClient.closeTab(tab.id);
@@ -442,7 +452,7 @@ async function handleTabs(args: { action?: string; domain?: string; tabId?: stri
         if (tab?.purpose === 'main') {
           return { success: false, content: "", error: "Cannot close main Perplexity tab" };
         }
-        return { success: false, content: "", error: `No tab found for domain: ${domain}` };
+        return { success: false, content: "", error: "No tab found for the specified domain" };
       }
       return { success: false, content: "", error: "Specify domain or tabId to close" };
     }

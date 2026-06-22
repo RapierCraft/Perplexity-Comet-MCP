@@ -161,3 +161,29 @@ export function validateTabId(tabId: string): string {
   }
   return tabId;
 }
+
+/**
+ * Validate a domain parameter supplied to `comet_tabs` (switch/close actions).
+ *
+ * Enforces:
+ *  - Maximum 253 characters (DNS hostname limit per RFC 1035)
+ *  - Only hostname-safe characters: ASCII letters, digits, hyphens, dots
+ *    (i.e. /^[A-Za-z0-9.\-]+$/)
+ *
+ * The error message intentionally does NOT echo back the supplied value —
+ * user-controlled strings reflected in responses are a stored-XSS vector if
+ * the MCP client ever renders them as HTML.
+ *
+ * Returns the (unchanged) domain string on success, throws on rejection.
+ */
+export function validateDomain(domain: string): string {
+  if (domain.length === 0 || domain.length > 253) {
+    throw new Error("Invalid domain: must be 1–253 characters long");
+  }
+  if (!/^[A-Za-z0-9.\-]+$/.test(domain)) {
+    throw new Error(
+      "Invalid domain: only letters, digits, hyphens, and dots are allowed"
+    );
+  }
+  return domain;
+}
