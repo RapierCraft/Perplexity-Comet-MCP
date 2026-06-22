@@ -115,7 +115,7 @@ export function validateUploadPath(filePath: string): string {
     "/etc/sudoers",
     "/etc/passwd",
     "/root",
-    "/proc/self/environ", // exposes all env vars including secrets
+    "/proc", // block entire /proc subtree (maps, fd/*, environ for any PID)
   ];
 
   for (const prefix of blockedPrefixes) {
