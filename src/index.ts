@@ -12,6 +12,7 @@ import {
   validateUploadPath,
   validateTabId,
   validateDomain,
+  validateSelector,
 } from "./upload-validator.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -1123,6 +1124,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             content: [{ type: "text", text: `Error: ${e.message}` }],
             isError: true,
           };
+        }
+
+        // Defense-in-depth: validate the selector at the tool-handler boundary
+        // before it reaches cdp-client.ts (which also validates). Keeps the
+        // tool from forwarding obviously-invalid input any further.
+        if (selector !== undefined) {
+          try {
+            validateSelector(selector);
+          } catch (e: any) {
+            return {
+              content: [{ type: "text", text: `Error: ${e.message}` }],
+              isError: true,
+            };
+          }
         }
 
         // If checkOnly, just report what file inputs exist

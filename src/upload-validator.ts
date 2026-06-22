@@ -189,3 +189,39 @@ export function validateDomain(domain: string): string {
   }
   return domain;
 }
+
+/**
+ * Validate a CSS selector parameter supplied to `comet_upload`.
+ *
+ * Enforces:
+ *  - Maximum 500 characters — prevents a pathologically long selector from
+ *    causing the Comet renderer to spend significant CPU time parsing (DoS).
+ *  - Character allowlist covering the full CSS selector grammar: letters,
+ *    digits, whitespace, and the punctuation characters used by class (`.`),
+ *    ID (`#`), attribute (`[`, `]`, `=`, `~`, `^`, `$`, `*`, `|`),
+ *    pseudo-class/element (`:`), combinators (`>`, `+`, `~`), grouping (`,`),
+ *    quotes (`"`, `'`), parentheses, hyphens, underscores, and at-signs.
+ *  - Rejects null bytes and characters outside that set (e.g. raw `<`, `>` as
+ *    HTML-injection attempts, or control characters).
+ *
+ * The error message intentionally does NOT echo back the supplied value —
+ * user-controlled strings reflected in responses are a stored-XSS vector if
+ * the MCP client ever renders them as HTML.
+ *
+ * Returns the (unchanged) selector string on success, throws on rejection.
+ */
+export function validateSelector(selector: string): string {
+  if (selector.length === 0 || selector.length > 500) {
+    throw new Error("Invalid selector: must be 1–500 characters long");
+  }
+  // Allowlist: CSS selector grammar characters only.
+  // Excludes: <, >, null bytes, and all other characters not used in CSS selectors.
+  if (
+    !/^[A-Za-z0-9\s\.\#\[\]=~^$*|:>+,\"'\(\)\-_\\/@!;{}%&]+$/.test(selector)
+  ) {
+    throw new Error(
+      "Invalid selector: contains characters not permitted in CSS selectors",
+    );
+  }
+  return selector;
+}

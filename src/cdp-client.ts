@@ -5,7 +5,7 @@ import CDP from "chrome-remote-interface";
 import { spawn, ChildProcess, execSync } from "child_process";
 import { platform } from "os";
 import { existsSync } from "fs";
-import { validateUploadPath } from "./upload-validator.js";
+import { validateUploadPath, validateSelector } from "./upload-validator.js";
 import type {
   CDPTarget,
   CDPVersion,
@@ -25,9 +25,11 @@ interface CdpProtocolError extends Error {
   request: { method: string; params?: unknown };
   response: CDP.SendError;
 }
-const ProtocolError = (CDP as unknown as {
-  ProtocolError: new (...args: unknown[]) => CdpProtocolError;
-}).ProtocolError;
+const ProtocolError = (
+  CDP as unknown as {
+    ProtocolError: new (...args: unknown[]) => CdpProtocolError;
+  }
+).ProtocolError;
 
 // Hidden targets (e.g. the Perplexity sidecar panel) can report a 0x0 layout
 // viewport in some Comet window states (cold launch, no real browsing tabs in
@@ -77,7 +79,11 @@ export async function captureScreenshotWithFallback(
   page: ScreenshotPageAPI,
   format: "png" | "jpeg" = "png",
 ): Promise<ScreenshotResult> {
-  try { await page.bringToFront(); } catch { /* not all targets support it */ }
+  try {
+    await page.bringToFront();
+  } catch {
+    /* not all targets support it */
+  }
 
   let clip: typeof SCREENSHOT_FALLBACK_CLIP | undefined;
   try {
@@ -114,7 +120,10 @@ export async function captureScreenshotWithFallback(
 }
 
 /** Per-frame lifecycle accumulator: frameId -> { current loaderId, event names seen }. */
-export type FrameLifecycleMap = Map<string, { loaderId: string; events: Set<string> }>;
+export type FrameLifecycleMap = Map<
+  string,
+  { loaderId: string; events: Set<string> }
+>;
 
 /**
  * The slice of the CDP Page domain that `waitForLifecycle` uses. The return
@@ -153,7 +162,13 @@ export function waitForLifecycle(
     const finish = (val: boolean) => {
       if (done) return;
       done = true;
-      if (unsubscribe) { try { unsubscribe(); } catch { /* ignore */ } }
+      if (unsubscribe) {
+        try {
+          unsubscribe();
+        } catch {
+          /* ignore */
+        }
+      }
       if (timer) clearTimeout(timer);
       resolve(val);
     };
@@ -162,9 +177,15 @@ export function waitForLifecycle(
     };
     try {
       unsubscribe = page.lifecycleEvent(listener);
-    } catch { finish(false); return; }
+    } catch {
+      finish(false);
+      return;
+    }
     for (const { events } of frameLifecycle.values()) {
-      if (events.has(eventName)) { finish(true); return; }
+      if (events.has(eventName)) {
+        finish(true);
+        return;
+      }
     }
     timer = setTimeout(() => finish(false), timeoutMs);
   });
@@ -172,10 +193,10 @@ export function waitForLifecycle(
 
 // Detect if running in WSL (must be before windowsFetch)
 function isWSL(): boolean {
-  if (platform() !== 'linux') return false;
+  if (platform() !== "linux") return false;
   try {
-    const release = execSync('uname -r', { encoding: 'utf8' }).toLowerCase();
-    return release.includes('microsoft') || release.includes('wsl');
+    const release = execSync("uname -r", { encoding: "utf8" }).toLowerCase();
+    return release.includes("microsoft") || release.includes("wsl");
   } catch {
     return false;
   }
@@ -187,13 +208,13 @@ const IS_WSL = isWSL();
 async function canConnectToWindowsLocalhost(port: number): Promise<boolean> {
   if (!IS_WSL) return true;
 
-  const net = await import('net');
+  const net = await import("net");
   return new Promise((resolve) => {
-    const client = net.createConnection({ port, host: '127.0.0.1' }, () => {
+    const client = net.createConnection({ port, host: "127.0.0.1" }, () => {
       client.destroy();
       resolve(true);
     });
-    client.on('error', () => {
+    client.on("error", () => {
       resolve(false);
     });
     client.setTimeout(2000, () => {
@@ -216,13 +237,13 @@ async function getWSLConnectPort(targetPort: number): Promise<number> {
   // Cannot connect - throw helpful error
   throw new Error(
     `WSL cannot connect to Windows localhost:${targetPort}.\n\n` +
-    `To fix this, enable WSL mirrored networking:\n` +
-    `1. Create/edit %USERPROFILE%\\.wslconfig with:\n` +
-    `   [wsl2]\n` +
-    `   networkingMode=mirrored\n` +
-    `2. Run: wsl --shutdown\n` +
-    `3. Restart WSL and try again\n\n` +
-    `Alternatively, run Claude Code from Windows PowerShell instead of WSL.`
+      `To fix this, enable WSL mirrored networking:\n` +
+      `1. Create/edit %USERPROFILE%\\.wslconfig with:\n` +
+      `   [wsl2]\n` +
+      `   networkingMode=mirrored\n` +
+      `2. Run: wsl --shutdown\n` +
+      `3. Restart WSL and try again\n\n` +
+      `Alternatively, run Claude Code from Windows PowerShell instead of WSL.`,
   );
 }
 
@@ -230,17 +251,20 @@ async function getWSLConnectPort(targetPort: number): Promise<number> {
 // literal: only `'` is special — double it to `''`. Also reject embedded
 // NUL or newline characters, which would terminate the command line.
 function psSingleQuote(value: string): string {
-  if (value.includes('\0') || /[\r\n]/.test(value)) {
-    throw new Error('Refusing to pass control characters to PowerShell');
+  if (value.includes("\0") || /[\r\n]/.test(value)) {
+    throw new Error("Refusing to pass control characters to PowerShell");
   }
   return value.replace(/'/g, "''");
 }
 
 // Windows/WSL-compatible fetch using PowerShell
 // On WSL, native fetch connects to WSL's localhost, not Windows where Comet runs
-async function windowsFetch(url: string, method: string = 'GET'): Promise<{ ok: boolean; status: number; json: () => Promise<any> }> {
+async function windowsFetch(
+  url: string,
+  method: string = "GET",
+): Promise<{ ok: boolean; status: number; json: () => Promise<any> }> {
   // Use native fetch only on non-Windows AND non-WSL
-  if (platform() !== 'win32' && !IS_WSL) {
+  if (platform() !== "win32" && !IS_WSL) {
     const response = await fetch(url, { method });
     return response;
   }
@@ -249,39 +273,51 @@ async function windowsFetch(url: string, method: string = 'GET'): Promise<{ ok: 
   // This is the trust boundary — caller-supplied tabIds and ports flow here.
   try {
     const parsed = new URL(url);
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new Error(`Unsupported protocol: ${parsed.protocol}`);
     }
-    if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost') {
+    if (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") {
       throw new Error(`Refusing non-loopback host: ${parsed.hostname}`);
     }
   } catch (e: any) {
-    return { ok: false, status: 0, json: async () => { throw e; } };
+    return {
+      ok: false,
+      status: 0,
+      json: async () => {
+        throw e;
+      },
+    };
   }
 
   // On Windows or WSL, use PowerShell to reach Windows localhost
   try {
     const safeUrl = psSingleQuote(url);
-    const psCommand = method === 'PUT'
-      ? `Invoke-WebRequest -Uri '${safeUrl}' -Method PUT -UseBasicParsing | Select-Object -ExpandProperty Content`
-      : `Invoke-WebRequest -Uri '${safeUrl}' -UseBasicParsing | Select-Object -ExpandProperty Content`;
+    const psCommand =
+      method === "PUT"
+        ? `Invoke-WebRequest -Uri '${safeUrl}' -Method PUT -UseBasicParsing | Select-Object -ExpandProperty Content`
+        : `Invoke-WebRequest -Uri '${safeUrl}' -UseBasicParsing | Select-Object -ExpandProperty Content`;
 
-    const result = execSync(`powershell.exe -NoProfile -Command "${psCommand}"`, {
-      encoding: 'utf8',
-      timeout: 10000,
-      windowsHide: true,
-    });
+    const result = execSync(
+      `powershell.exe -NoProfile -Command "${psCommand}"`,
+      {
+        encoding: "utf8",
+        timeout: 10000,
+        windowsHide: true,
+      },
+    );
 
     return {
       ok: true,
       status: 200,
-      json: async () => JSON.parse(result.trim())
+      json: async () => JSON.parse(result.trim()),
     };
   } catch (error: any) {
     return {
       ok: false,
       status: 0,
-      json: async () => { throw error; }
+      json: async () => {
+        throw error;
+      },
     };
   }
 }
@@ -415,7 +451,7 @@ export class CometCDPClient {
     }
 
     try {
-      await this.client.Runtime.evaluate({ expression: '1+1', timeout: 3000 });
+      await this.client.Runtime.evaluate({ expression: "1+1", timeout: 3000 });
       this.healthCheckCache = true;
       this.lastHealthCheck = now;
       return true;
@@ -438,7 +474,7 @@ export class CometCDPClient {
    * Ensure connection is healthy, reconnect if not
    */
   async ensureConnection(): Promise<void> {
-    if (!await this.isConnectionHealthy()) {
+    if (!(await this.isConnectionHealthy())) {
       this.invalidateHealthCache();
       await this.reconnect();
     }
@@ -456,12 +492,15 @@ export class CometCDPClient {
     }
 
     // If we recently verified health, skip
-    if (Date.now() - this.lastHealthCheck < this.HEALTH_CHECK_CACHE_MS && this.healthCheckCache) {
+    if (
+      Date.now() - this.lastHealthCheck < this.HEALTH_CHECK_CACHE_MS &&
+      this.healthCheckCache
+    ) {
       return;
     }
 
     // Full health check
-    if (!await this.isConnectionHealthy()) {
+    if (!(await this.isConnectionHealthy())) {
       this.invalidateHealthCache();
       await this.reconnect();
     }
@@ -478,10 +517,13 @@ export class CometCDPClient {
   private ensureSingleReconnect(): Promise<void> {
     if (!this.reconnectPromise) {
       const attempt = this.reconnectAttempts;
-      const delay = Math.min(300 * Math.pow(1.3, Math.max(attempt - 1, 0)), 2000);
+      const delay = Math.min(
+        300 * Math.pow(1.3, Math.max(attempt - 1, 0)),
+        2000,
+      );
       this.reconnectPromise = (async () => {
         this.invalidateHealthCache();
-        await new Promise(r => setTimeout(r, delay));
+        await new Promise((r) => setTimeout(r, delay));
         await this.reconnect();
       })().finally(() => {
         this.reconnectPromise = null;
@@ -497,7 +539,11 @@ export class CometCDPClient {
     // If a reconnect is already in-flight, wait for it instead of
     // launching a parallel one.
     if (this.reconnectPromise) {
-      try { await this.reconnectPromise; } catch { /* fall through to retry */ }
+      try {
+        await this.reconnectPromise;
+      } catch {
+        /* fall through to retry */
+      }
     }
 
     // Pre-operation health check (uses cache for efficiency)
@@ -519,20 +565,38 @@ export class CometCDPClient {
       return result;
     } catch (error: unknown) {
       this.consecutiveSuccesses = 0;
-      const errorMessage = error instanceof Error ? error.message : String(error);
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
 
       const connectionErrors = [
-        'WebSocket', 'CLOSED', 'not open', 'disconnected', 'readyState',
-        'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'socket hang up',
-        'Protocol error', 'Target closed', 'Session closed', 'Execution context',
-        'detached', 'crashed', 'Inspected target navigated', 'aborted'
+        "WebSocket",
+        "CLOSED",
+        "not open",
+        "disconnected",
+        "readyState",
+        "ECONNREFUSED",
+        "ECONNRESET",
+        "ETIMEDOUT",
+        "EPIPE",
+        "socket hang up",
+        "Protocol error",
+        "Target closed",
+        "Session closed",
+        "Execution context",
+        "detached",
+        "crashed",
+        "Inspected target navigated",
+        "aborted",
       ];
 
-      const isConnectionError = connectionErrors.some(e =>
-        errorMessage.toLowerCase().includes(e.toLowerCase())
+      const isConnectionError = connectionErrors.some((e) =>
+        errorMessage.toLowerCase().includes(e.toLowerCase()),
       );
 
-      if (isConnectionError && this.reconnectAttempts < this.maxReconnectAttempts) {
+      if (
+        isConnectionError &&
+        this.reconnectAttempts < this.maxReconnectAttempts
+      ) {
         this.reconnectAttempts++;
 
         try {
@@ -544,13 +608,20 @@ export class CometCDPClient {
           if (this.reconnectAttempts < this.maxReconnectAttempts) {
             try {
               await this.startComet(this.state.port);
-              await new Promise(r => setTimeout(r, 1500));
+              await new Promise((r) => setTimeout(r, 1500));
               const targets = await this.listTargets();
               // Pick main Perplexity tab, NOT the sidecar.
               const page =
-                targets.find(t => t.type === 'page' && t.url.includes('perplexity') && !t.url.includes('sidecar')) ||
-                targets.find(t => t.type === 'page' && t.url.includes('perplexity'));
-              const anyPage = page || targets.find(t => t.type === 'page');
+                targets.find(
+                  (t) =>
+                    t.type === "page" &&
+                    t.url.includes("perplexity") &&
+                    !t.url.includes("sidecar"),
+                ) ||
+                targets.find(
+                  (t) => t.type === "page" && t.url.includes("perplexity"),
+                );
+              const anyPage = page || targets.find((t) => t.type === "page");
               if (anyPage) {
                 await this.connect(anyPage.id);
                 return await operation();
@@ -572,7 +643,11 @@ export class CometCDPClient {
    */
   async reconnect(): Promise<string> {
     if (this.client) {
-      try { await this.client.close(); } catch { /* ignore */ }
+      try {
+        await this.client.close();
+      } catch {
+        /* ignore */
+      }
     }
     this.state.connected = false;
     this.client = null;
@@ -583,9 +658,11 @@ export class CometCDPClient {
     } catch {
       try {
         await this.startComet(this.state.port);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       } catch {
-        throw new Error('Cannot connect to Comet. Ensure Comet is running with --remote-debugging-port=9222');
+        throw new Error(
+          "Cannot connect to Comet. Ensure Comet is running with --remote-debugging-port=9222",
+        );
       }
     }
 
@@ -593,10 +670,12 @@ export class CometCDPClient {
     if (this.lastTargetId) {
       try {
         const targets = await this.listTargets();
-        if (targets.find(t => t.id === this.lastTargetId)) {
+        if (targets.find((t) => t.id === this.lastTargetId)) {
           return await this.connect(this.lastTargetId);
         }
-      } catch { /* target gone */ }
+      } catch {
+        /* target gone */
+      }
     }
 
     // Find best target. Prefer the MAIN Perplexity tab — explicitly
@@ -605,15 +684,22 @@ export class CometCDPClient {
     // routes `sendPrompt` / `stopAgent` to the wrong tab.
     const targets = await this.listTargets();
     const target =
-      targets.find(t => t.type === 'page' && t.url.includes('perplexity.ai') && !t.url.includes('sidecar')) ||
-      targets.find(t => t.type === 'page' && t.url.includes('perplexity.ai')) ||
-      targets.find(t => t.type === 'page' && t.url !== 'about:blank');
+      targets.find(
+        (t) =>
+          t.type === "page" &&
+          t.url.includes("perplexity.ai") &&
+          !t.url.includes("sidecar"),
+      ) ||
+      targets.find(
+        (t) => t.type === "page" && t.url.includes("perplexity.ai"),
+      ) ||
+      targets.find((t) => t.type === "page" && t.url !== "about:blank");
 
     if (target) {
       return await this.connect(target.id);
     }
 
-    throw new Error('No suitable tab found for reconnection');
+    throw new Error("No suitable tab found for reconnection");
   }
 
   /**
@@ -629,26 +715,35 @@ export class CometCDPClient {
     const targets = await this.listTargets();
 
     return {
-      main: targets.find(t =>
-        t.type === 'page' && t.url.includes('perplexity.ai') && !t.url.includes('sidecar')
-      ) || null,
-      sidecar: targets.find(t =>
-        t.type === 'page' && t.url.includes('sidecar')
-      ) || null,
-      agentBrowsing: targets.find(t =>
-        t.type === 'page' &&
-        !t.url.includes('perplexity.ai') &&
-        !t.url.includes('chrome-extension') &&
-        !t.url.includes('chrome://') &&
-        t.url !== 'about:blank'
-      ) || null,
-      overlay: targets.find(t =>
-        t.url.includes('chrome-extension') && t.url.includes('overlay')
-      ) || null,
-      others: targets.filter(t =>
-        t.type === 'page' &&
-        !t.url.includes('perplexity.ai') &&
-        !t.url.includes('chrome-extension')
+      main:
+        targets.find(
+          (t) =>
+            t.type === "page" &&
+            t.url.includes("perplexity.ai") &&
+            !t.url.includes("sidecar"),
+        ) || null,
+      sidecar:
+        targets.find((t) => t.type === "page" && t.url.includes("sidecar")) ||
+        null,
+      agentBrowsing:
+        targets.find(
+          (t) =>
+            t.type === "page" &&
+            !t.url.includes("perplexity.ai") &&
+            !t.url.includes("chrome-extension") &&
+            !t.url.includes("chrome://") &&
+            t.url !== "about:blank",
+        ) || null,
+      overlay:
+        targets.find(
+          (t) =>
+            t.url.includes("chrome-extension") && t.url.includes("overlay"),
+        ) || null,
+      others: targets.filter(
+        (t) =>
+          t.type === "page" &&
+          !t.url.includes("perplexity.ai") &&
+          !t.url.includes("chrome-extension"),
       ),
     };
   }
@@ -665,11 +760,14 @@ export class CometCDPClient {
       if (this.client) {
         try {
           const urlResult = await this.client.Runtime.evaluate({
-            expression: 'window.location.href',
-            timeout: 2000
+            expression: "window.location.href",
+            timeout: 2000,
           });
           const currentUrl = urlResult.result.value as string;
-          if (currentUrl?.includes('perplexity.ai') && !currentUrl.includes('sidecar')) {
+          if (
+            currentUrl?.includes("perplexity.ai") &&
+            !currentUrl.includes("sidecar")
+          ) {
             return true; // Already on Perplexity main tab
           }
         } catch {
@@ -687,8 +785,11 @@ export class CometCDPClient {
 
       // Fallback: find any Perplexity tab that isn't the sidecar.
       const targets = await this.listTargets();
-      const perplexityTab = targets.find(t =>
-        t.type === 'page' && t.url.includes('perplexity.ai') && !t.url.includes('sidecar')
+      const perplexityTab = targets.find(
+        (t) =>
+          t.type === "page" &&
+          t.url.includes("perplexity.ai") &&
+          !t.url.includes("sidecar"),
       );
 
       if (perplexityTab) {
@@ -710,14 +811,14 @@ export class CometCDPClient {
     if (!this.client) return false;
     try {
       const result = await this.client.Runtime.evaluate({
-        expression: 'window.location.href',
-        timeout: 2000
+        expression: "window.location.href",
+        timeout: 2000,
       });
       const url = result.result.value as string;
       // Sidecar URLs match `perplexity.ai` but are a different surface; treat
       // them as "not the main tab" so callers don't dispatch sendPrompt /
       // stopAgent there.
-      return !!url && url.includes('perplexity.ai') && !url.includes('sidecar');
+      return !!url && url.includes("perplexity.ai") && !url.includes("sidecar");
     } catch {
       return false;
     }
@@ -733,7 +834,7 @@ export class CometCDPClient {
       const parsed = new URL(url);
       return parsed.hostname;
     } catch {
-      return 'unknown';
+      return "unknown";
     }
   }
 
@@ -742,16 +843,18 @@ export class CometCDPClient {
    */
   private isInternalTab(url: string): boolean {
     // Chrome internal pages
-    if (url.startsWith('chrome://') ||
-        url.startsWith('chrome-extension://') ||
-        url.startsWith('devtools://') ||
-        url === 'about:blank' ||
-        url === '') {
+    if (
+      url.startsWith("chrome://") ||
+      url.startsWith("chrome-extension://") ||
+      url.startsWith("devtools://") ||
+      url === "about:blank" ||
+      url === ""
+    ) {
       return true;
     }
 
     // ALL Perplexity URLs are internal Comet UI, not real browsing tabs
-    if (url.includes('perplexity.ai')) {
+    if (url.includes("perplexity.ai")) {
       return true;
     }
 
@@ -761,11 +864,11 @@ export class CometCDPClient {
   /**
    * Infer tab purpose from URL and context
    */
-  private inferPurpose(url: string, title: string): TabContext['purpose'] {
-    if (this.isInternalTab(url)) return 'unknown';
-    if (url.includes('perplexity.ai')) return 'main';
+  private inferPurpose(url: string, title: string): TabContext["purpose"] {
+    if (this.isInternalTab(url)) return "unknown";
+    if (url.includes("perplexity.ai")) return "main";
     // Default to agent-browsing for external sites
-    return 'agent-browsing';
+    return "agent-browsing";
   }
 
   /**
@@ -779,7 +882,7 @@ export class CometCDPClient {
     const existingIds = new Set<string>();
 
     for (const target of targets) {
-      if (target.type !== 'page') continue;
+      if (target.type !== "page") continue;
 
       // Skip internal Chrome tabs entirely
       if (this.isInternalTab(target.url)) continue;
@@ -870,15 +973,23 @@ export class CometCDPClient {
   /**
    * Find tabs by purpose
    */
-  async findTabsByPurpose(purpose: TabContext['purpose']): Promise<TabContext[]> {
+  async findTabsByPurpose(
+    purpose: TabContext["purpose"],
+  ): Promise<TabContext[]> {
     await this.refreshTabRegistry();
-    return Array.from(this.tabRegistry.values()).filter(t => t.purpose === purpose);
+    return Array.from(this.tabRegistry.values()).filter(
+      (t) => t.purpose === purpose,
+    );
   }
 
   /**
    * Update tab purpose (for workflow tracking)
    */
-  setTabPurpose(tabId: string, purpose: TabContext['purpose'], taskId?: string): void {
+  setTabPurpose(
+    tabId: string,
+    purpose: TabContext["purpose"],
+    taskId?: string,
+  ): void {
     const tab = this.tabRegistry.get(tabId);
     if (tab) {
       tab.purpose = purpose;
@@ -901,13 +1012,16 @@ export class CometCDPClient {
   /**
    * Navigate to URL, reusing existing tab if one exists for that domain
    */
-  async navigateOrReuseTab(url: string, purpose: TabContext['purpose'] = 'agent-browsing'): Promise<{ tabId: string; reused: boolean }> {
+  async navigateOrReuseTab(
+    url: string,
+    purpose: TabContext["purpose"] = "agent-browsing",
+  ): Promise<{ tabId: string; reused: boolean }> {
     const domain = this.extractDomain(url);
 
     // Check if we already have a tab for this domain
     const existingTab = await this.findTabByDomain(domain);
 
-    if (existingTab && existingTab.purpose !== 'main') {
+    if (existingTab && existingTab.purpose !== "main") {
       // Reuse existing tab
       await this.connect(existingTab.id);
       await this.navigate(url, true);
@@ -917,7 +1031,7 @@ export class CometCDPClient {
 
     // Create new tab
     const newTab = await this.newTab(url);
-    await new Promise(r => setTimeout(r, 1500)); // Wait for load
+    await new Promise((r) => setTimeout(r, 1500)); // Wait for load
     await this.connect(newTab.id);
 
     // Register the new tab
@@ -941,7 +1055,7 @@ export class CometCDPClient {
     const allTabs = await this.getTabContexts();
 
     // Filter out internal Chrome tabs - only show real browsing tabs
-    const tabs = allTabs.filter(t => !this.isInternalTab(t.url));
+    const tabs = allTabs.filter((t) => !this.isInternalTab(t.url));
 
     if (tabs.length === 0) {
       return "No browsing tabs open";
@@ -953,11 +1067,15 @@ export class CometCDPClient {
       const active = tab.id === this.state.activeTabId ? " [ACTIVE]" : "";
       const task = tab.taskId ? ` (task: ${tab.taskId})` : "";
       const summary = tab.contentSummary ? ` - ${tab.contentSummary}` : "";
-      lines.push(`  • ${tab.purpose.toUpperCase()}: ${tab.domain}${active}${task}${summary}`);
-      lines.push(`    URL: ${tab.url.substring(0, 80)}${tab.url.length > 80 ? '...' : ''}`);
+      lines.push(
+        `  • ${tab.purpose.toUpperCase()}: ${tab.domain}${active}${task}${summary}`,
+      );
+      lines.push(
+        `    URL: ${tab.url.substring(0, 80)}${tab.url.length > 80 ? "..." : ""}`,
+      );
     }
 
-    return lines.join('\n');
+    return lines.join("\n");
   }
 
   /**
@@ -967,19 +1085,25 @@ export class CometCDPClient {
     return new Promise((resolve) => {
       if (IS_WINDOWS) {
         // Windows: use tasklist to check for comet.exe
-        const check = spawn('tasklist', ['/FI', 'IMAGENAME eq comet.exe', '/NH']);
-        let output = '';
-        check.stdout?.on('data', (data) => { output += data.toString(); });
-        check.on('close', () => {
-          // If comet.exe is running, output will contain "comet.exe"
-          resolve(output.toLowerCase().includes('comet.exe'));
+        const check = spawn("tasklist", [
+          "/FI",
+          "IMAGENAME eq comet.exe",
+          "/NH",
+        ]);
+        let output = "";
+        check.stdout?.on("data", (data) => {
+          output += data.toString();
         });
-        check.on('error', () => resolve(false));
+        check.on("close", () => {
+          // If comet.exe is running, output will contain "comet.exe"
+          resolve(output.toLowerCase().includes("comet.exe"));
+        });
+        check.on("error", () => resolve(false));
       } else {
         // macOS/Linux: use pgrep
-        const check = spawn('pgrep', ['-f', 'Comet.app']);
-        check.on('close', (code) => resolve(code === 0));
-        check.on('error', () => resolve(false));
+        const check = spawn("pgrep", ["-f", "Comet.app"]);
+        check.on("close", (code) => resolve(code === 0));
+        check.on("error", () => resolve(false));
       }
     });
   }
@@ -991,14 +1115,14 @@ export class CometCDPClient {
     return new Promise((resolve) => {
       if (IS_WINDOWS) {
         // Windows: use taskkill to kill comet.exe
-        const kill = spawn('taskkill', ['/F', '/IM', 'comet.exe']);
-        kill.on('close', () => setTimeout(resolve, 1000));
-        kill.on('error', () => setTimeout(resolve, 1000));
+        const kill = spawn("taskkill", ["/F", "/IM", "comet.exe"]);
+        kill.on("close", () => setTimeout(resolve, 1000));
+        kill.on("error", () => setTimeout(resolve, 1000));
       } else {
         // macOS/Linux: use pkill
-        const kill = spawn('pkill', ['-f', 'Comet.app']);
-        kill.on('close', () => setTimeout(resolve, 1000));
-        kill.on('error', () => setTimeout(resolve, 1000));
+        const kill = spawn("pkill", ["-f", "Comet.app"]);
+        kill.on("close", () => setTimeout(resolve, 1000));
+        kill.on("error", () => setTimeout(resolve, 1000));
       }
     });
   }
@@ -1013,9 +1137,11 @@ export class CometCDPClient {
     if (IS_WSL) {
       // Check if Comet is already running with debug port via HTTP
       try {
-        const response = await windowsFetch(`http://127.0.0.1:${port}/json/version`);
+        const response = await windowsFetch(
+          `http://127.0.0.1:${port}/json/version`,
+        );
         if (response.ok) {
-          const version = await response.json() as CDPVersion;
+          const version = (await response.json()) as CDPVersion;
           return `Comet already running on Windows host, port: ${port} (${version.Browser})`;
         }
       } catch {
@@ -1023,15 +1149,24 @@ export class CometCDPClient {
       }
 
       // Try to launch Comet via PowerShell on Windows
-      console.error('Comet not accessible, attempting to launch via PowerShell...');
+      console.error(
+        "Comet not accessible, attempting to launch via PowerShell...",
+      );
 
       // Get Windows user's LOCALAPPDATA path
-      let cometPath = '';
+      let cometPath = "";
       try {
-        const localAppData = execSync('cmd.exe /c echo %LOCALAPPDATA%', { encoding: 'utf8' }).trim().replace(/\r?\n/g, '');
+        const localAppData = execSync("cmd.exe /c echo %LOCALAPPDATA%", {
+          encoding: "utf8",
+        })
+          .trim()
+          .replace(/\r?\n/g, "");
         cometPath = `${localAppData}\\Perplexity\\Comet\\Application\\Comet.exe`;
       } catch {
-        cometPath = 'C:\\Users\\' + (process.env.USER || 'user') + '\\AppData\\Local\\Perplexity\\Comet\\Application\\Comet.exe';
+        cometPath =
+          "C:\\Users\\" +
+          (process.env.USER || "user") +
+          "\\AppData\\Local\\Perplexity\\Comet\\Application\\Comet.exe";
       }
 
       // Validate port + path before interpolating into PowerShell.
@@ -1050,12 +1185,12 @@ export class CometCDPClient {
         // string, then PowerShell turns that into separate argv elements
         // for Comet itself. Match the args produced by cometLaunchArgs().
         const launchArgs = cometLaunchArgs(port)
-          .map(a => `'${a.replace(/'/g, "''")}'`)
-          .join(',');
+          .map((a) => `'${a.replace(/'/g, "''")}'`)
+          .join(",");
         const psCommand = `Set-Location C:\\; Start-Process -FilePath '${safeCometPath}' -ArgumentList ${launchArgs}`;
-        spawn('powershell.exe', ['-NoProfile', '-Command', psCommand], {
+        spawn("powershell.exe", ["-NoProfile", "-Command", psCommand], {
           detached: true,
-          stdio: 'ignore',
+          stdio: "ignore",
         }).unref();
 
         // Wait for Comet to start - use HTTP check via PowerShell
@@ -1066,20 +1201,26 @@ export class CometCDPClient {
           const checkReady = async () => {
             attempts++;
             try {
-              const response = await windowsFetch(`http://127.0.0.1:${port}/json/version`);
+              const response = await windowsFetch(
+                `http://127.0.0.1:${port}/json/version`,
+              );
               if (response.ok) {
                 resolve(`Comet started via WSL->PowerShell on port ${port}`);
                 return;
               }
-            } catch { /* keep trying */ }
+            } catch {
+              /* keep trying */
+            }
 
             if (attempts < maxAttempts) {
               setTimeout(checkReady, 500);
             } else {
-              reject(new Error(
-                `Timeout waiting for Comet. Tried to launch: ${cometPath}\n` +
-                `Try manually: powershell.exe -Command "Start-Process '${cometPath}' -ArgumentList '--remote-debugging-port=${port}'"`
-              ));
+              reject(
+                new Error(
+                  `Timeout waiting for Comet. Tried to launch: ${cometPath}\n` +
+                    `Try manually: powershell.exe -Command "Start-Process '${cometPath}' -ArgumentList '--remote-debugging-port=${port}'"`,
+                ),
+              );
             }
           };
 
@@ -1088,8 +1229,8 @@ export class CometCDPClient {
       } catch (launchError) {
         throw new Error(
           `Cannot connect to or launch Comet browser.\n` +
-          `Tried path: ${cometPath}\n` +
-          `Error: ${launchError instanceof Error ? launchError.message : String(launchError)}`
+            `Tried path: ${cometPath}\n` +
+            `Error: ${launchError instanceof Error ? launchError.message : String(launchError)}`,
         );
       }
     }
@@ -1098,7 +1239,7 @@ export class CometCDPClient {
     if (IS_WINDOWS) {
       try {
         // Try to connect directly via CDP WebSocket
-        const testClient = await CDP({ port, host: '127.0.0.1' });
+        const testClient = await CDP({ port, host: "127.0.0.1" });
         await testClient.close();
         return `Comet already running with debug port: ${port}`;
       } catch {
@@ -1120,16 +1261,22 @@ export class CometCDPClient {
             const checkReady = async () => {
               attempts++;
               try {
-                const testClient = await CDP({ port, host: '127.0.0.1' });
+                const testClient = await CDP({ port, host: "127.0.0.1" });
                 await testClient.close();
                 resolve(`Comet started with debug port ${port}`);
                 return;
-              } catch { /* keep trying */ }
+              } catch {
+                /* keep trying */
+              }
 
               if (attempts < maxAttempts) {
                 setTimeout(checkReady, 500);
               } else {
-                reject(new Error(`Timeout waiting for Comet. Try running: "${COMET_PATH}" --remote-debugging-port=${port}`));
+                reject(
+                  new Error(
+                    `Timeout waiting for Comet. Try running: "${COMET_PATH}" --remote-debugging-port=${port}`,
+                  ),
+                );
               }
             };
 
@@ -1138,7 +1285,7 @@ export class CometCDPClient {
         } else {
           // Process running but CDP not accessible - need restart with debug port
           await this.killComet();
-          await new Promise(r => setTimeout(r, 1000));
+          await new Promise((r) => setTimeout(r, 1000));
 
           this.cometProcess = spawn(COMET_PATH, cometLaunchArgs(port), {
             detached: true,
@@ -1153,16 +1300,22 @@ export class CometCDPClient {
             const checkReady = async () => {
               attempts++;
               try {
-                const testClient = await CDP({ port, host: '127.0.0.1' });
+                const testClient = await CDP({ port, host: "127.0.0.1" });
                 await testClient.close();
                 resolve(`Comet restarted with debug port ${port}`);
                 return;
-              } catch { /* keep trying */ }
+              } catch {
+                /* keep trying */
+              }
 
               if (attempts < maxAttempts) {
                 setTimeout(checkReady, 500);
               } else {
-                reject(new Error(`Timeout waiting for Comet. Try running: "${COMET_PATH}" --remote-debugging-port=${port}`));
+                reject(
+                  new Error(
+                    `Timeout waiting for Comet. Try running: "${COMET_PATH}" --remote-debugging-port=${port}`,
+                  ),
+                );
               }
             };
 
@@ -1174,10 +1327,12 @@ export class CometCDPClient {
 
     // Non-Windows: use original HTTP-based approach
     try {
-      const response = await windowsFetch(`http://127.0.0.1:${port}/json/version`);
+      const response = await windowsFetch(
+        `http://127.0.0.1:${port}/json/version`,
+      );
 
       if (response.ok) {
-        const version = await response.json() as CDPVersion;
+        const version = (await response.json()) as CDPVersion;
         return `Comet already running with debug port: ${version.Browser}`;
       }
     } catch {
@@ -1201,14 +1356,20 @@ export class CometCDPClient {
       const checkReady = async () => {
         attempts++;
         try {
-          const response = await windowsFetch(`http://127.0.0.1:${port}/json/version`);
+          const response = await windowsFetch(
+            `http://127.0.0.1:${port}/json/version`,
+          );
 
           if (response.ok) {
-            const version = await response.json() as CDPVersion;
-            resolve(`Comet started with debug port ${port}: ${version.Browser}`);
+            const version = (await response.json()) as CDPVersion;
+            resolve(
+              `Comet started with debug port ${port}: ${version.Browser}`,
+            );
             return;
           }
-        } catch { /* keep trying */ }
+        } catch {
+          /* keep trying */
+        }
 
         if (attempts < maxAttempts) {
           setTimeout(checkReady, 500);
@@ -1228,8 +1389,11 @@ export class CometCDPClient {
    * Get CDP version info
    */
   async getVersion(): Promise<CDPVersion> {
-    const response = await windowsFetch(`http://127.0.0.1:${this.state.port}/json/version`);
-    if (!response.ok) throw new Error(`Failed to get version: ${response.status}`);
+    const response = await windowsFetch(
+      `http://127.0.0.1:${this.state.port}/json/version`,
+    );
+    if (!response.ok)
+      throw new Error(`Failed to get version: ${response.status}`);
     return response.json() as Promise<CDPVersion>;
   }
 
@@ -1239,15 +1403,21 @@ export class CometCDPClient {
   async listTargets(): Promise<CDPTarget[]> {
     // On WSL, use HTTP via PowerShell (WebSocket doesn't work across WSL/Windows boundary)
     if (IS_WSL) {
-      const response = await windowsFetch(`http://127.0.0.1:${this.state.port}/json/list`);
-      if (!response.ok) throw new Error(`Failed to list targets: ${response.status}`);
+      const response = await windowsFetch(
+        `http://127.0.0.1:${this.state.port}/json/list`,
+      );
+      if (!response.ok)
+        throw new Error(`Failed to list targets: ${response.status}`);
       return response.json() as Promise<CDPTarget[]>;
     }
 
     // On native Windows (not WSL), use CDP Target.getTargets() to avoid HTTP issues
     if (IS_WINDOWS) {
       try {
-        const tempClient = await CDP({ port: this.state.port, host: '127.0.0.1' });
+        const tempClient = await CDP({
+          port: this.state.port,
+          host: "127.0.0.1",
+        });
         try {
           const { targetInfos } = await (tempClient as any).Target.getTargets();
           return targetInfos.map((t: any) => ({
@@ -1255,13 +1425,15 @@ export class CometCDPClient {
             type: t.type,
             title: t.title,
             url: t.url,
-            webSocketDebuggerUrl: `ws://127.0.0.1:${this.state.port}/devtools/page/${t.targetId}`
+            webSocketDebuggerUrl: `ws://127.0.0.1:${this.state.port}/devtools/page/${t.targetId}`,
           }));
         } finally {
           // Close in `finally` so a throw inside `Target.getTargets()` does
           // not leak the underlying WebSocket. Each retry in withAutoReconnect
           // calls listTargets() again — even a slow leak exhausts handles.
-          await tempClient.close().catch(() => { /* already closed */ });
+          await tempClient.close().catch(() => {
+            /* already closed */
+          });
         }
       } catch (error) {
         throw new Error(`Failed to list targets: ${error}`);
@@ -1269,8 +1441,11 @@ export class CometCDPClient {
     }
 
     // Fallback for other platforms (macOS, Linux)
-    const response = await windowsFetch(`http://127.0.0.1:${this.state.port}/json/list`);
-    if (!response.ok) throw new Error(`Failed to list targets: ${response.status}`);
+    const response = await windowsFetch(
+      `http://127.0.0.1:${this.state.port}/json/list`,
+    );
+    if (!response.ok)
+      throw new Error(`Failed to list targets: ${response.status}`);
     return response.json() as Promise<CDPTarget[]>;
   }
 
@@ -1285,7 +1460,7 @@ export class CometCDPClient {
     // On WSL, check if we can connect directly (mirrored networking required)
     const connectPort = await getWSLConnectPort(this.state.port);
 
-    const options: CDP.Options = { port: connectPort, host: '127.0.0.1' };
+    const options: CDP.Options = { port: connectPort, host: "127.0.0.1" };
     if (targetId) options.target = targetId;
 
     this.client = await CDP(options);
@@ -1299,17 +1474,24 @@ export class CometCDPClient {
 
     // Set window size for consistent UI
     try {
-      const { windowId } = await (this.client as any).Browser.getWindowForTarget({ targetId });
+      const { windowId } = await (
+        this.client as any
+      ).Browser.getWindowForTarget({ targetId });
       await (this.client as any).Browser.setWindowBounds({
         windowId,
-        bounds: { width: 1440, height: 900, windowState: 'normal' },
+        bounds: { width: 1440, height: 900, windowState: "normal" },
       });
     } catch {
       try {
         await (this.client as any).Emulation.setDeviceMetricsOverride({
-          width: 1440, height: 900, deviceScaleFactor: 1, mobile: false,
+          width: 1440,
+          height: 900,
+          deviceScaleFactor: 1,
+          mobile: false,
         });
-      } catch { /* continue */ }
+      } catch {
+        /* continue */
+      }
     }
 
     // Subscribe to Page.lifecycleEvent so we can wait for paint readiness
@@ -1317,7 +1499,11 @@ export class CometCDPClient {
     // Puppeteer do, instead of polling document.readyState.
     this.frameLifecycle.clear();
     if (this.lifecycleUnsubscribe) {
-      try { this.lifecycleUnsubscribe(); } catch { /* ignore */ }
+      try {
+        this.lifecycleUnsubscribe();
+      } catch {
+        /* ignore */
+      }
       this.lifecycleUnsubscribe = null;
     }
     this.lifecycleListener = null;
@@ -1328,7 +1514,10 @@ export class CometCDPClient {
         if (!frameId || !loaderId || !name) return;
         const existing = this.frameLifecycle.get(frameId);
         if (!existing || existing.loaderId !== loaderId) {
-          this.frameLifecycle.set(frameId, { loaderId, events: new Set([name]) });
+          this.frameLifecycle.set(frameId, {
+            loaderId,
+            events: new Set([name]),
+          });
         } else {
           existing.events.add(name);
         }
@@ -1336,15 +1525,21 @@ export class CometCDPClient {
       // chrome-remote-interface's domain event callbacks return an unsubscribe
       // function (api.js: `() => chrome.removeListener(rawEventName, handler)`).
       // Capture it so disconnect() can deregister cleanly.
-      this.lifecycleUnsubscribe = this.client.Page.lifecycleEvent(this.lifecycleListener);
-    } catch { /* lifecycle tracking is best-effort */ }
+      this.lifecycleUnsubscribe = this.client.Page.lifecycleEvent(
+        this.lifecycleListener,
+      );
+    } catch {
+      /* lifecycle tracking is best-effort */
+    }
 
     this.state.connected = true;
     this.state.activeTabId = targetId;
     this.lastTargetId = targetId;
     this.reconnectAttempts = 0;
 
-    const { result } = await this.client.Runtime.evaluate({ expression: "window.location.href" });
+    const { result } = await this.client.Runtime.evaluate({
+      expression: "window.location.href",
+    });
     this.state.currentUrl = result.value as string;
 
     return `Connected to tab: ${this.state.currentUrl}`;
@@ -1355,7 +1550,11 @@ export class CometCDPClient {
    */
   async disconnect(): Promise<void> {
     if (this.lifecycleUnsubscribe) {
-      try { this.lifecycleUnsubscribe(); } catch { /* ignore */ }
+      try {
+        this.lifecycleUnsubscribe();
+      } catch {
+        /* ignore */
+      }
       this.lifecycleUnsubscribe = null;
     }
     this.lifecycleListener = null;
@@ -1386,15 +1585,20 @@ export class CometCDPClient {
     } catch {
       throw new Error(`Invalid URL: ${url}`);
     }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      throw new Error(`Refusing navigation to non-http(s) URL: ${parsed.protocol}`);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error(
+        `Refusing navigation to non-http(s) URL: ${parsed.protocol}`,
+      );
     }
   }
 
   /**
    * Navigate to a URL
    */
-  async navigate(url: string, waitForLoad: boolean = true): Promise<NavigateResult> {
+  async navigate(
+    url: string,
+    waitForLoad: boolean = true,
+  ): Promise<NavigateResult> {
     this.ensureConnected();
     this.assertNavigableUrl(url);
     const result = await this.client!.Page.navigate({ url });
@@ -1409,8 +1613,17 @@ export class CometCDPClient {
    * @param maxRetries - Maximum number of retry attempts (default: 3)
    * @param retryDelay - Delay between retries in ms (default: 1000)
    */
-  async navigateWithRetry(url: string, maxRetries: number = 3, retryDelay: number = 1000): Promise<{ success: boolean; url: string; attempts: number; error?: string }> {
-    let lastError: string = '';
+  async navigateWithRetry(
+    url: string,
+    maxRetries: number = 3,
+    retryDelay: number = 1000,
+  ): Promise<{
+    success: boolean;
+    url: string;
+    attempts: number;
+    error?: string;
+  }> {
+    let lastError: string = "";
 
     try {
       this.assertNavigableUrl(url);
@@ -1444,7 +1657,10 @@ export class CometCDPClient {
           // pulling in `events` as a value import for a type-only need.
           interface CdpEmitter {
             once(event: string, listener: (...args: unknown[]) => void): void;
-            removeListener(event: string, listener: (...args: unknown[]) => void): void;
+            removeListener(
+              event: string,
+              listener: (...args: unknown[]) => void,
+            ): void;
           }
           const client = this.client! as unknown as CdpEmitter;
           await new Promise<void>((resolve, reject) => {
@@ -1453,10 +1669,10 @@ export class CometCDPClient {
               resolve();
             };
             const timer = setTimeout(() => {
-              client.removeListener('Page.loadEventFired', onLoad);
-              reject(new Error('Page load timeout'));
+              client.removeListener("Page.loadEventFired", onLoad);
+              reject(new Error("Page load timeout"));
             }, 15000);
-            client.once('Page.loadEventFired', onLoad);
+            client.once("Page.loadEventFired", onLoad);
           });
 
           this.state.currentUrl = url;
@@ -1467,14 +1683,18 @@ export class CometCDPClient {
         lastError = error.message || String(error);
 
         // Don't retry for certain errors
-        if (lastError.includes('net::ERR_NAME_NOT_RESOLVED') ||
-            lastError.includes('net::ERR_INVALID_URL')) {
+        if (
+          lastError.includes("net::ERR_NAME_NOT_RESOLVED") ||
+          lastError.includes("net::ERR_INVALID_URL")
+        ) {
           return { success: false, url, attempts: attempt, error: lastError };
         }
 
         // Wait before retry
         if (attempt < maxRetries) {
-          await new Promise(resolve => setTimeout(resolve, retryDelay * attempt));
+          await new Promise((resolve) =>
+            setTimeout(resolve, retryDelay * attempt),
+          );
         }
       }
     }
@@ -1491,7 +1711,12 @@ export class CometCDPClient {
     // Wait for paint readiness via Page.lifecycleEvent (Lighthouse/Puppeteer
     // approach). If firstContentfulPaint already fired for this document the
     // call returns synchronously; otherwise we wait up to 2s for the next FCP.
-    await waitForLifecycle(this.client!.Page, this.frameLifecycle, 'firstContentfulPaint', 2000);
+    await waitForLifecycle(
+      this.client!.Page,
+      this.frameLifecycle,
+      "firstContentfulPaint",
+      2000,
+    );
 
     return captureScreenshotWithFallback(this.client!.Page, format);
   }
@@ -1537,9 +1762,10 @@ export class CometCDPClient {
   async newTab(url?: string): Promise<CDPTarget> {
     const response = await windowsFetch(
       `http://127.0.0.1:${this.state.port}/json/new${url ? `?${url}` : ""}`,
-      'PUT'
+      "PUT",
     );
-    if (!response.ok) throw new Error(`Failed to create new tab: ${response.status}`);
+    if (!response.ok)
+      throw new Error(`Failed to create new tab: ${response.status}`);
     return response.json() as Promise<CDPTarget>;
   }
 
@@ -1552,10 +1778,14 @@ export class CometCDPClient {
         const result = await this.client.Target.closeTarget({ targetId });
         return result.success;
       }
-    } catch { /* fallback to HTTP */ }
+    } catch {
+      /* fallback to HTTP */
+    }
 
     try {
-      const response = await windowsFetch(`http://127.0.0.1:${this.state.port}/json/close/${targetId}`);
+      const response = await windowsFetch(
+        `http://127.0.0.1:${this.state.port}/json/close/${targetId}`,
+      );
       return response.ok;
     } catch {
       return false;
@@ -1576,7 +1806,10 @@ export class CometCDPClient {
    * @param selector - Optional CSS selector for the file input (auto-detects if not provided)
    * @returns Result with success status and details
    */
-  async uploadFile(filePath: string, selector?: string): Promise<{ success: boolean; message: string; inputFound: boolean }> {
+  async uploadFile(
+    filePath: string,
+    selector?: string,
+  ): Promise<{ success: boolean; message: string; inputFound: boolean }> {
     return this.withAutoReconnect(async () => {
       this.ensureConnected();
 
@@ -1599,18 +1832,31 @@ export class CometCDPClient {
       let nodeId: number;
 
       if (selector) {
+        // Validate the user-supplied selector before passing it to the CDP
+        // DOM.querySelector call — guards against pathologically long or
+        // malformed selectors that could cause excessive renderer CPU usage.
+        try {
+          validateSelector(selector);
+        } catch (err: unknown) {
+          return {
+            success: false,
+            message: err instanceof Error ? err.message : String(err),
+            inputFound: false,
+          };
+        }
+
         // Use provided selector
         const doc = await this.client!.DOM.getDocument();
         const result = await this.client!.DOM.querySelector({
           nodeId: doc.root.nodeId,
-          selector: selector
+          selector: selector,
         });
 
         if (!result.nodeId) {
           return {
             success: false,
             message: `No element found matching selector: ${selector}`,
-            inputFound: false
+            inputFound: false,
           };
         }
         nodeId = result.nodeId;
@@ -1624,7 +1870,7 @@ export class CometCDPClient {
           'input[type="file"]',
           '[data-testid*="file"] input',
           '[class*="upload"] input[type="file"]',
-          '[class*="dropzone"] input[type="file"]'
+          '[class*="dropzone"] input[type="file"]',
         ];
 
         let found = false;
@@ -1632,7 +1878,7 @@ export class CometCDPClient {
           try {
             const result = await this.client!.DOM.querySelector({
               nodeId: doc.root.nodeId,
-              selector: sel
+              selector: sel,
             });
             if (result.nodeId) {
               nodeId = result.nodeId;
@@ -1647,8 +1893,9 @@ export class CometCDPClient {
         if (!found) {
           return {
             success: false,
-            message: 'No file input element found on the page. Try providing a specific selector.',
-            inputFound: false
+            message:
+              "No file input element found on the page. Try providing a specific selector.",
+            inputFound: false,
           };
         }
       }
@@ -1657,7 +1904,7 @@ export class CometCDPClient {
       try {
         await this.client!.DOM.setFileInputFiles({
           nodeId: nodeId!,
-          files: [resolvedPath]
+          files: [resolvedPath],
         });
 
         // Trigger change event to notify the page
@@ -1671,19 +1918,19 @@ export class CometCDPClient {
                 input.dispatchEvent(new Event('input', { bubbles: true }));
               }
             })();
-          `
+          `,
         });
 
         return {
           success: true,
           message: `File uploaded successfully: ${resolvedPath}`,
-          inputFound: true
+          inputFound: true,
         };
       } catch (error: any) {
         return {
           success: false,
           message: `Failed to set file: ${error.message}`,
-          inputFound: true
+          inputFound: true,
         };
       }
     });
@@ -1695,7 +1942,10 @@ export class CometCDPClient {
    * @param filePaths - Array of absolute file paths
    * @param selector - Optional CSS selector for the file input
    */
-  async uploadFiles(filePaths: string[], selector?: string): Promise<{ success: boolean; message: string }> {
+  async uploadFiles(
+    filePaths: string[],
+    selector?: string,
+  ): Promise<{ success: boolean; message: string }> {
     return this.withAutoReconnect(async () => {
       this.ensureConnected();
 
@@ -1712,25 +1962,37 @@ export class CometCDPClient {
         }
       }
 
+      // Validate the user-supplied selector (if any) before passing to CDP.
+      if (selector) {
+        try {
+          validateSelector(selector);
+        } catch (err: unknown) {
+          return {
+            success: false,
+            message: err instanceof Error ? err.message : String(err),
+          };
+        }
+      }
+
       const doc = await this.client!.DOM.getDocument();
       const sel = selector || 'input[type="file"]';
 
       const result = await this.client!.DOM.querySelector({
         nodeId: doc.root.nodeId,
-        selector: sel
+        selector: sel,
       });
 
       if (!result.nodeId) {
         return {
           success: false,
-          message: `No file input found with selector: ${sel}`
+          message: `No file input found with selector: ${sel}`,
         };
       }
 
       try {
         await this.client!.DOM.setFileInputFiles({
           nodeId: result.nodeId,
-          files: resolvedPaths
+          files: resolvedPaths,
         });
 
         // Trigger change event
@@ -1744,17 +2006,17 @@ export class CometCDPClient {
                 input.dispatchEvent(new Event('input', { bubbles: true }));
               }
             })();
-          `
+          `,
         });
 
         return {
           success: true,
-          message: `${filePaths.length} file(s) uploaded successfully`
+          message: `${filePaths.length} file(s) uploaded successfully`,
         };
       } catch (error: any) {
         return {
           success: false,
-          message: `Failed to upload files: ${error.message}`
+          message: `Failed to upload files: ${error.message}`,
         };
       }
     });
@@ -1763,7 +2025,11 @@ export class CometCDPClient {
   /**
    * Check if the current page has any file inputs
    */
-  async hasFileInput(): Promise<{ found: boolean; count: number; selectors: string[] }> {
+  async hasFileInput(): Promise<{
+    found: boolean;
+    count: number;
+    selectors: string[];
+  }> {
     return this.withAutoReconnect(async () => {
       this.ensureConnected();
 
@@ -1782,14 +2048,17 @@ export class CometCDPClient {
             return { count: inputs.length, selectors };
           })();
         `,
-        returnByValue: true
+        returnByValue: true,
       });
 
-      const data = result.result.value as { count: number; selectors: string[] };
+      const data = result.result.value as {
+        count: number;
+        selectors: string[];
+      };
       return {
         found: data.count > 0,
         count: data.count,
-        selectors: data.selectors
+        selectors: data.selectors,
       };
     });
   }
@@ -1799,7 +2068,9 @@ export class CometCDPClient {
    * Note: This won't actually open a native dialog in headless mode,
    * but can trigger custom file picker UIs
    */
-  async clickFileInput(selector?: string): Promise<{ success: boolean; message: string }> {
+  async clickFileInput(
+    selector?: string,
+  ): Promise<{ success: boolean; message: string }> {
     return this.withAutoReconnect(async () => {
       this.ensureConnected();
 
@@ -1817,13 +2088,15 @@ export class CometCDPClient {
             return { clicked: false };
           })();
         `,
-        returnByValue: true
+        returnByValue: true,
       });
 
       const data = result.result.value as { clicked: boolean };
       return {
         success: data.clicked,
-        message: data.clicked ? 'File input clicked' : 'No file input found to click'
+        message: data.clicked
+          ? "File input clicked"
+          : "No file input found to click",
       };
     });
   }
