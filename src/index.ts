@@ -979,4 +979,31 @@ transport.onerror = (err: unknown) => {
 process.stdin.on("end", () => shutdown(0));
 process.stdin.on("close", () => shutdown(0));
 
-server.connect(transport);
+// Connect with explicit error handling. The promise was previously
+// fire-and-forget — if the transport failed to attach (e.g. stdin
+// already closed) the process would silently exit with no logs.
+server.connect(transport).catch((err) => {
+  console.error("[comet-mcp] Failed to connect MCP transport:", err);
+  process.exit(1);
+});
+
+// Graceful shutdown: close the CDP client so the underlying WebSocket
+// to Comet doesn't sit half-open until Comet times it out. SIGINT
+// covers Ctrl+C, SIGTERM covers normal `kill` / orchestrator shutdown.
+//
+// `disconnect()` is racing a 3s timer so a stuck WebSocket can never
+// keep the process alive past Ctrl+C. POSIX exit codes: 128+signum
+// (130 = SIGINT, 143 = SIGTERM).
+async function gracefulShutdown(signal: string): Promise<void> {
+  try {
+    await Promise.race([
+      cometClient.disconnect(),
+      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+    ]);
+  } catch {
+    /* best-effort */
+  }
+  process.exit(signal === "SIGINT" ? 130 : 143);
+}
+process.on("SIGINT", () => { void gracefulShutdown("SIGINT"); });
+process.on("SIGTERM", () => { void gracefulShutdown("SIGTERM"); });
