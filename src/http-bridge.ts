@@ -25,7 +25,11 @@ import { timingSafeEqual } from "crypto";
 import { URL } from "url";
 import { cometClient } from "./cdp-client.js";
 import { cometAI } from "./comet-ai.js";
-import { validateUploadPath, validateTabId, validateDomain } from "./upload-validator.js";
+import {
+  validateUploadPath,
+  validateTabId,
+  validateDomain,
+} from "./upload-validator.js";
 
 // ============================================================================
 // Configuration
@@ -48,7 +52,9 @@ const CORS_ORIGIN = process.env.COMET_BRIDGE_CORS_ORIGIN ?? null;
 
 if (!BRIDGE_TOKEN) {
   console.error("ERROR: COMET_BRIDGE_TOKEN environment variable is required");
-  console.error("Usage: COMET_BRIDGE_TOKEN=your-secret-token node dist/http-bridge.js");
+  console.error(
+    "Usage: COMET_BRIDGE_TOKEN=your-secret-token node dist/http-bridge.js",
+  );
   process.exit(1);
 }
 
@@ -117,22 +123,30 @@ type ToolResult = {
 async function handleConnect(): Promise<ToolResult> {
   const startResult = await cometClient.startComet(9223);
   const targets = await cometClient.listTargets();
-  const perplexityTab = targets.find(t => t.type === 'page' && t.url.includes('perplexity.ai'));
-  const anyPage = perplexityTab || targets.find(t => t.type === 'page');
+  const perplexityTab = targets.find(
+    (t) => t.type === "page" && t.url.includes("perplexity.ai"),
+  );
+  const anyPage = perplexityTab || targets.find((t) => t.type === "page");
 
   if (anyPage) {
     await cometClient.connect(anyPage.id);
-    if (!anyPage.url.includes('perplexity.ai')) {
+    if (!anyPage.url.includes("perplexity.ai")) {
       await cometClient.navigate("https://www.perplexity.ai/", true);
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      await new Promise((resolve) => setTimeout(resolve, 1500));
     }
-    return { success: true, content: `${startResult}\nConnected to Perplexity` };
+    return {
+      success: true,
+      content: `${startResult}\nConnected to Perplexity`,
+    };
   }
 
   const newTab = await cometClient.newTab("https://www.perplexity.ai/");
-  await new Promise(resolve => setTimeout(resolve, 2000));
+  await new Promise((resolve) => setTimeout(resolve, 2000));
   await cometClient.connect(newTab.id);
-  return { success: true, content: `${startResult}\nCreated new tab and navigated to Perplexity` };
+  return {
+    success: true,
+    content: `${startResult}\nCreated new tab and navigated to Perplexity`,
+  };
 }
 
 async function handleAsk(args: {
@@ -166,38 +180,49 @@ async function handleAsk(args: {
     try {
       await cometClient.startComet(9223);
       const targets = await cometClient.listTargets();
-      const page = targets.find(t => t.type === 'page');
+      const page = targets.find((t) => t.type === "page");
       if (page) await cometClient.connect(page.id);
     } catch {
-      return { success: false, content: "", error: "Failed to establish connection to Comet browser" };
+      return {
+        success: false,
+        content: "",
+        error: "Failed to establish connection to Comet browser",
+      };
     }
   }
 
   // Normalize prompt
   prompt = prompt
-    .replace(/^[-*•]\s*/gm, '')
-    .replace(/\n+/g, ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/^[-*•]\s*/gm, "")
+    .replace(/\n+/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 
   // Transform for agentic browsing
   const hasUrl = /https?:\/\/[^\s]+/.test(prompt);
-  const hasWebsiteRef = /\b(go to|visit|navigate|open|browse|check|look at|read from|click|fill|submit|login|sign in|download from)\b/i.test(prompt);
-  const hasSiteNames = /\b(\.com|\.org|\.io|\.net|\.ai|website|webpage|page|site)\b/i.test(prompt);
+  const hasWebsiteRef =
+    /\b(go to|visit|navigate|open|browse|check|look at|read from|click|fill|submit|login|sign in|download from)\b/i.test(
+      prompt,
+    );
+  const hasSiteNames =
+    /\b(\.com|\.org|\.io|\.net|\.ai|website|webpage|page|site)\b/i.test(prompt);
   const needsAgenticBrowsing = hasUrl || hasWebsiteRef || hasSiteNames;
 
   if (needsAgenticBrowsing) {
-    const alreadyAgentic = /^(use your browser|using your browser|open a browser|navigate to|browse to)/i.test(prompt);
+    const alreadyAgentic =
+      /^(use your browser|using your browser|open a browser|navigate to|browse to)/i.test(
+        prompt,
+      );
     if (!alreadyAgentic) {
       if (hasUrl) {
         const urlMatch = prompt.match(/https?:\/\/[^\s]+/);
         if (urlMatch) {
           const url = urlMatch[0];
-          const restOfPrompt = prompt.replace(url, '').trim();
-          prompt = `Use your browser to navigate to ${url} and ${restOfPrompt || 'tell me what you find there'}`;
+          const restOfPrompt = prompt.replace(url, "").trim();
+          prompt = `Use your browser to navigate to ${url} and ${restOfPrompt || "tell me what you find there"}`;
         }
       } else {
-        prompt = `Use your browser to ${prompt.toLowerCase().startsWith('go') ? '' : 'go and '}${prompt}`;
+        prompt = `Use your browser to ${prompt.toLowerCase().startsWith("go") ? "" : "go and "}${prompt}`;
       }
     }
   }
@@ -207,20 +232,22 @@ async function handleAsk(args: {
     await cometClient.ensureConnection();
     try {
       await cometClient.navigate("https://www.perplexity.ai/", true);
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     } catch {
       const targets = await cometClient.listTargets();
-      const mainTab = targets.find(t => t.type === 'page' && t.url.includes('perplexity'));
+      const mainTab = targets.find(
+        (t) => t.type === "page" && t.url.includes("perplexity"),
+      );
       if (mainTab) {
         await cometClient.connect(mainTab.id);
       } else {
-        const anyPage = targets.find(t => t.type === 'page');
+        const anyPage = targets.find((t) => t.type === "page");
         if (anyPage) {
           await cometClient.connect(anyPage.id);
           await cometClient.navigate("https://www.perplexity.ai/", true);
         }
       }
-      await new Promise(resolve => setTimeout(resolve, 1500));
+      await new Promise((resolve) => setTimeout(resolve, 1500));
     }
   } else {
     const tabs = await cometClient.listTabsCategorized();
@@ -228,11 +255,11 @@ async function handleAsk(args: {
       await cometClient.connect(tabs.main.id);
     }
 
-    const urlResult = await cometClient.evaluate('window.location.href');
+    const urlResult = await cometClient.evaluate("window.location.href");
     const currentUrl = urlResult.result.value as string;
-    if (!currentUrl?.includes('perplexity.ai')) {
+    if (!currentUrl?.includes("perplexity.ai")) {
       await cometClient.navigate("https://www.perplexity.ai/", true);
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
   }
 
@@ -249,7 +276,10 @@ async function handleAsk(args: {
       };
     })()
   `);
-  const oldState = oldStateResult.result.value as { count: number; lastText: string };
+  const oldState = oldStateResult.result.value as {
+    count: number;
+    lastText: string;
+  };
 
   // Send prompt
   await cometAI.sendPrompt(prompt);
@@ -259,14 +289,14 @@ async function handleAsk(args: {
   const stepsCollected: string[] = [];
   let sawNewResponse = false;
   let lastActivityTime = Date.now();
-  let previousResponse = '';
+  let previousResponse = "";
   const POLL_INTERVAL = 1500;
   const IDLE_TIMEOUT = 6000;
   let consecutiveErrors = 0;
   const MAX_CONSECUTIVE_ERRORS = 5;
 
   while (Date.now() - startTime < maxTimeout) {
-    await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+    await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
 
     try {
       const isOnPerplexity = await cometClient.isOnPerplexityTab();
@@ -278,8 +308,9 @@ async function handleAsk(args: {
         }
       }
 
-      const currentStateResult = await cometClient.withAutoReconnect(async () => {
-        return await cometClient.evaluate(`
+      const currentStateResult = await cometClient.withAutoReconnect(
+        async () => {
+          return await cometClient.evaluate(`
           (() => {
             const proseEls = document.querySelectorAll('[class*="prose"]');
             const lastProse = proseEls[proseEls.length - 1];
@@ -289,12 +320,18 @@ async function handleAsk(args: {
             };
           })()
         `);
-      });
-      const currentState = currentStateResult.result.value as { count: number; lastText: string };
+        },
+      );
+      const currentState = currentStateResult.result.value as {
+        count: number;
+        lastText: string;
+      };
 
       if (!sawNewResponse) {
-        if (currentState.count > oldState.count ||
-            (currentState.lastText && currentState.lastText !== oldState.lastText)) {
+        if (
+          currentState.count > oldState.count ||
+          (currentState.lastText && currentState.lastText !== oldState.lastText)
+        ) {
           sawNewResponse = true;
         }
       }
@@ -316,7 +353,7 @@ async function handleAsk(args: {
 
       sessionState.steps = stepsCollected;
 
-      if (status.status === 'completed' && sawNewResponse) {
+      if (status.status === "completed" && sawNewResponse) {
         const response = status.response;
         completeTask(response);
         return { success: true, content: response };
@@ -335,33 +372,39 @@ async function handleAsk(args: {
     }
   }
 
-  const finalResponse = sessionState.lastResponse || previousResponse || "Task timed out or no response received";
+  const finalResponse =
+    sessionState.lastResponse ||
+    previousResponse ||
+    "Task timed out or no response received";
   completeTask(finalResponse);
   return { success: true, content: finalResponse };
 }
 
 async function handlePoll(): Promise<ToolResult> {
   if (isSessionStale()) {
-    return { success: true, content: "No active task (session stale or not started)" };
+    return {
+      success: true,
+      content: "No active task (session stale or not started)",
+    };
   }
 
   const status = await cometAI.getAgentStatus();
   const allSteps = [...new Set([...sessionState.steps, ...status.steps])];
 
-  let output = '';
+  let output = "";
   if (sessionState.isActive) {
-    output = `Status: working\nPrompt: ${sessionState.lastPrompt || 'unknown'}\n`;
+    output = `Status: working\nPrompt: ${sessionState.lastPrompt || "unknown"}\n`;
     if (status.response) {
-      output += `\nPartial response:\n${status.response.substring(0, 500)}${status.response.length > 500 ? '...' : ''}`;
+      output += `\nPartial response:\n${status.response.substring(0, 500)}${status.response.length > 500 ? "..." : ""}`;
     }
   } else {
-    output = `Status: complete\nResponse:\n${sessionState.lastResponse || 'No response'}`;
+    output = `Status: complete\nResponse:\n${sessionState.lastResponse || "No response"}`;
   }
 
   if (allSteps.length > 0) {
-    output += `\nSteps:\n${allSteps.map(s => `  • ${s}`).join('\n')}\n`;
+    output += `\nSteps:\n${allSteps.map((s) => `  • ${s}`).join("\n")}\n`;
   }
-  if (status.status === 'working' || sessionState.isActive) {
+  if (status.status === "working" || sessionState.isActive) {
     output += `\n[Use comet_stop to interrupt, or comet_screenshot to see current page]`;
   }
 
@@ -373,29 +416,36 @@ async function handleStop(): Promise<ToolResult> {
   if (stopped) {
     sessionState.isActive = false;
   }
-  return { success: true, content: stopped ? "Agent stopped" : "No active agent to stop" };
+  return {
+    success: true,
+    content: stopped ? "Agent stopped" : "No active agent to stop",
+  };
 }
 
 async function handleScreenshot(): Promise<ToolResult> {
   const result = await cometClient.screenshot("png");
   return {
     success: true,
-    content: [{ type: "image", data: result.data, mimeType: "image/png" }]
+    content: [{ type: "image", data: result.data, mimeType: "image/png" }],
   };
 }
 
-async function handleTabs(args: { action?: string; domain?: string; tabId?: string }): Promise<ToolResult> {
-  const action = args.action || 'list';
+async function handleTabs(args: {
+  action?: string;
+  domain?: string;
+  tabId?: string;
+}): Promise<ToolResult> {
+  const action = args.action || "list";
   const domain = args.domain;
   const rawTabId = args.tabId;
 
   switch (action) {
-    case 'list': {
+    case "list": {
       const summary = await cometClient.getTabSummary();
       return { success: true, content: summary };
     }
 
-    case 'switch': {
+    case "switch": {
       if (rawTabId) {
         // Validate tabId before passing to CDP.
         try {
@@ -403,29 +453,52 @@ async function handleTabs(args: { action?: string; domain?: string; tabId?: stri
           await cometClient.connect(tabId);
           return { success: true, content: `Switched to tab: ${tabId}` };
         } catch (err: unknown) {
-          return { success: false, content: "", error: err instanceof Error ? err.message : String(err) };
+          return {
+            success: false,
+            content: "",
+            error: err instanceof Error ? err.message : String(err),
+          };
         }
       }
       if (domain) {
         try {
           validateDomain(domain);
         } catch (err: unknown) {
-          return { success: false, content: "", error: err instanceof Error ? err.message : String(err) };
+          return {
+            success: false,
+            content: "",
+            error: err instanceof Error ? err.message : String(err),
+          };
         }
         const tab = await cometClient.findTabByDomain(domain);
         if (tab) {
           await cometClient.connect(tab.id);
-          return { success: true, content: `Switched to ${tab.domain} (${tab.url})` };
+          return {
+            success: true,
+            content: `Switched to ${tab.domain} (${tab.url})`,
+          };
         }
-        return { success: false, content: "", error: "No tab found for the specified domain" };
+        return {
+          success: false,
+          content: "",
+          error: "No tab found for the specified domain",
+        };
       }
-      return { success: false, content: "", error: "Specify domain or tabId to switch" };
+      return {
+        success: false,
+        content: "",
+        error: "Specify domain or tabId to switch",
+      };
     }
 
-    case 'close': {
+    case "close": {
       const allTabs = await cometClient.getTabContexts();
       if (allTabs.length <= 1) {
-        return { success: false, content: "", error: "Cannot close - this is the only browsing tab" };
+        return {
+          success: false,
+          content: "",
+          error: "Cannot close - this is the only browsing tab",
+        };
       }
 
       if (rawTabId) {
@@ -433,36 +506,70 @@ async function handleTabs(args: { action?: string; domain?: string; tabId?: stri
         try {
           const tabId = validateTabId(rawTabId);
           const success = await cometClient.closeTab(tabId);
-          return { success, content: success ? `Closed tab: ${tabId}` : "Failed to close tab" };
+          return {
+            success,
+            content: success ? `Closed tab: ${tabId}` : "Failed to close tab",
+          };
         } catch (err: unknown) {
-          return { success: false, content: "", error: err instanceof Error ? err.message : String(err) };
+          return {
+            success: false,
+            content: "",
+            error: err instanceof Error ? err.message : String(err),
+          };
         }
       }
       if (domain) {
         try {
           validateDomain(domain);
         } catch (err: unknown) {
-          return { success: false, content: "", error: err instanceof Error ? err.message : String(err) };
+          return {
+            success: false,
+            content: "",
+            error: err instanceof Error ? err.message : String(err),
+          };
         }
         const tab = await cometClient.findTabByDomain(domain);
-        if (tab && tab.purpose !== 'main') {
+        if (tab && tab.purpose !== "main") {
           const success = await cometClient.closeTab(tab.id);
-          return { success, content: success ? `Closed ${tab.domain}` : "Failed to close tab" };
+          return {
+            success,
+            content: success ? `Closed ${tab.domain}` : "Failed to close tab",
+          };
         }
-        if (tab?.purpose === 'main') {
-          return { success: false, content: "", error: "Cannot close main Perplexity tab" };
+        if (tab?.purpose === "main") {
+          return {
+            success: false,
+            content: "",
+            error: "Cannot close main Perplexity tab",
+          };
         }
-        return { success: false, content: "", error: "No tab found for the specified domain" };
+        return {
+          success: false,
+          content: "",
+          error: "No tab found for the specified domain",
+        };
       }
-      return { success: false, content: "", error: "Specify domain or tabId to close" };
+      return {
+        success: false,
+        content: "",
+        error: "Specify domain or tabId to close",
+      };
     }
 
     default:
-      return { success: false, content: "", error: `Unknown action: ${action}. Use: list, switch, close` };
+      return {
+        success: false,
+        content: "",
+        error: `Unknown action: ${action}. Use: list, switch, close`,
+      };
   }
 }
 
-async function handleUpload(args: { filePath?: string; selector?: string; checkOnly?: boolean }): Promise<ToolResult> {
+async function handleUpload(args: {
+  filePath?: string;
+  selector?: string;
+  checkOnly?: boolean;
+}): Promise<ToolResult> {
   const filePath = args.filePath;
   if (!filePath) {
     return { success: false, content: "", error: "filePath is required" };
@@ -473,18 +580,27 @@ async function handleUpload(args: { filePath?: string; selector?: string; checkO
   try {
     resolvedPath = validateUploadPath(filePath);
   } catch (err: unknown) {
-    return { success: false, content: "", error: err instanceof Error ? err.message : String(err) };
+    return {
+      success: false,
+      content: "",
+      error: err instanceof Error ? err.message : String(err),
+    };
   }
 
   if (args.checkOnly) {
     const inputInfo = await cometClient.hasFileInput();
     if (inputInfo.found) {
       let msg = `Found ${inputInfo.count} file input(s) on the page:\n`;
-      msg += inputInfo.selectors.map((s: string, i: number) => `  ${i + 1}. ${s}`).join('\n');
+      msg += inputInfo.selectors
+        .map((s: string, i: number) => `  ${i + 1}. ${s}`)
+        .join("\n");
       msg += `\n\nUse comet_upload with filePath to upload to one of these inputs.`;
       return { success: true, content: msg };
     } else {
-      return { success: true, content: "No file input elements found on the current page." };
+      return {
+        success: true,
+        content: "No file input elements found on the current page.",
+      };
     }
   }
 
@@ -523,10 +639,10 @@ async function handleMode(args: { mode?: string }): Promise<ToolResult> {
 
     const currentMode = result.result.value as string;
     const descriptions: Record<string, string> = {
-      search: 'Basic web search',
-      research: 'Deep research with comprehensive analysis',
-      labs: 'Analytics, visualizations, and coding',
-      learn: 'Educational content and explanations'
+      search: "Basic web search",
+      research: "Deep research with comprehensive analysis",
+      labs: "Analytics, visualizations, and coding",
+      learn: "Educational content and explanations",
     };
 
     let output = `Current mode: ${currentMode}\n\nAvailable modes:\n`;
@@ -546,7 +662,11 @@ async function handleMode(args: { mode?: string }): Promise<ToolResult> {
   };
   const ariaLabel = modeMap[mode];
   if (!ariaLabel) {
-    return { success: false, content: "", error: `Invalid mode: ${mode}. Use: search, research, labs, learn` };
+    return {
+      success: false,
+      content: "",
+      error: `Invalid mode: ${mode}. Use: search, research, labs, learn`,
+    };
   }
 
   const state = cometClient.currentState;
@@ -575,10 +695,15 @@ async function handleMode(args: { mode?: string }): Promise<ToolResult> {
     })()
   `);
 
-  const result = clickResult.result.value as { success: boolean; method?: string; needsSelect?: boolean; error?: string };
+  const result = clickResult.result.value as {
+    success: boolean;
+    method?: string;
+    needsSelect?: boolean;
+    error?: string;
+  };
 
   if (result.success && result.needsSelect) {
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await new Promise((resolve) => setTimeout(resolve, 300));
     const selectResult = await cometClient.evaluate(`
       (() => {
         const items = document.querySelectorAll('[role="menuitem"], [role="option"], button');
@@ -591,7 +716,10 @@ async function handleMode(args: { mode?: string }): Promise<ToolResult> {
         return { success: false, error: "Mode option not found in dropdown" };
       })()
     `);
-    const selectRes = selectResult.result.value as { success: boolean; error?: string };
+    const selectRes = selectResult.result.value as {
+      success: boolean;
+      error?: string;
+    };
     if (selectRes.success) {
       return { success: true, content: `Switched to ${mode} mode` };
     } else {
@@ -629,7 +757,11 @@ function corsHeaders(): Record<string, string> {
   };
 }
 
-function sendJSON(res: http.ServerResponse, statusCode: number, data: unknown): void {
+function sendJSON(
+  res: http.ServerResponse,
+  statusCode: number,
+  data: unknown,
+): void {
   res.writeHead(statusCode, {
     "Content-Type": "application/json",
     ...corsHeaders(),
@@ -640,7 +772,9 @@ function sendJSON(res: http.ServerResponse, statusCode: number, data: unknown): 
 function parseBody(req: http.IncomingMessage): Promise<unknown> {
   return new Promise((resolve, reject) => {
     let body = "";
-    req.on("data", chunk => { body += chunk; });
+    req.on("data", (chunk) => {
+      body += chunk;
+    });
     req.on("end", () => {
       try {
         resolve(body ? JSON.parse(body) : {});
@@ -728,7 +862,10 @@ const server = http.createServer(async (req, res) => {
 
   // All other endpoints require authentication
   if (!validateToken(req)) {
-    sendJSON(res, 401, { error: "Unauthorized", message: "Invalid or missing token" });
+    sendJSON(res, 401, {
+      error: "Unauthorized",
+      message: "Invalid or missing token",
+    });
     return;
   }
 
@@ -744,7 +881,10 @@ const server = http.createServer(async (req, res) => {
           { name: "comet_screenshot", description: "Capture screenshot" },
           { name: "comet_tabs", description: "Manage browser tabs" },
           { name: "comet_mode", description: "Switch Perplexity mode" },
-          { name: "comet_upload", description: "Upload a file to a file input on the current page" },
+          {
+            name: "comet_upload",
+            description: "Upload a file to a file input on the current page",
+          },
         ],
       });
       return;
@@ -754,7 +894,7 @@ const server = http.createServer(async (req, res) => {
     const toolMatch = path.match(/^\/tool\/(\w+)$/);
     if (toolMatch && req.method === "POST") {
       const toolName = toolMatch[1];
-      const args = await parseBody(req) as Record<string, unknown>;
+      const args = (await parseBody(req)) as Record<string, unknown>;
       const result = await executeToolByName(toolName, args);
       sendJSON(res, result.success ? 200 : 400, result);
       return;
@@ -762,9 +902,15 @@ const server = http.createServer(async (req, res) => {
 
     // JSON-RPC style endpoint
     if (path === "/rpc" && req.method === "POST") {
-      const body = await parseBody(req) as { method?: string; params?: Record<string, unknown> };
+      const body = (await parseBody(req)) as {
+        method?: string;
+        params?: Record<string, unknown>;
+      };
       if (!body.method) {
-        sendJSON(res, 400, { error: "Bad Request", message: "Missing 'method' field" });
+        sendJSON(res, 400, {
+          error: "Bad Request",
+          message: "Missing 'method' field",
+        });
         return;
       }
       const result = await executeToolByName(body.method, body.params || {});
@@ -773,8 +919,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     // 404 for unknown routes
-    sendJSON(res, 404, { error: "Not Found", message: `Unknown endpoint: ${path}` });
-
+    sendJSON(res, 404, {
+      error: "Not Found",
+      message: `Unknown endpoint: ${path}`,
+    });
   } catch (error) {
     console.error("Server error:", error);
     sendJSON(res, 500, {
@@ -784,12 +932,22 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-async function executeToolByName(name: string, args: Record<string, unknown>): Promise<ToolResult> {
+async function executeToolByName(
+  name: string,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
   switch (name) {
     case "comet_connect":
       return handleConnect();
     case "comet_ask":
-      return handleAsk(args as { prompt: string; context?: string; newChat?: boolean; timeout?: number });
+      return handleAsk(
+        args as {
+          prompt: string;
+          context?: string;
+          newChat?: boolean;
+          timeout?: number;
+        },
+      );
     case "comet_poll":
       return handlePoll();
     case "comet_stop":
@@ -797,11 +955,15 @@ async function executeToolByName(name: string, args: Record<string, unknown>): P
     case "comet_screenshot":
       return handleScreenshot();
     case "comet_tabs":
-      return handleTabs(args as { action?: string; domain?: string; tabId?: string });
+      return handleTabs(
+        args as { action?: string; domain?: string; tabId?: string },
+      );
     case "comet_mode":
       return handleMode(args as { mode?: string });
     case "comet_upload":
-      return handleUpload(args as { filePath?: string; selector?: string; checkOnly?: boolean });
+      return handleUpload(
+        args as { filePath?: string; selector?: string; checkOnly?: boolean },
+      );
     default:
       return { success: false, content: "", error: `Unknown tool: ${name}` };
   }

@@ -57,7 +57,7 @@ export function validateUploadPath(filePath: string): string {
     if (resolvedRoot === "/" || resolvedRoot === home) {
       throw new Error(
         `COMET_UPLOAD_ROOT is set to an overly broad value ("${resolvedRoot}"). ` +
-        `Use a specific subdirectory (e.g., ~/uploads) to restrict allowed paths.`
+          `Use a specific subdirectory (e.g., ~/uploads) to restrict allowed paths.`,
       );
     }
 
@@ -72,15 +72,17 @@ export function validateUploadPath(filePath: string): string {
     if (realRoot === "/" || realRoot === home) {
       throw new Error(
         `COMET_UPLOAD_ROOT resolves to an overly broad path ("${realRoot}"). ` +
-        `Use a specific subdirectory to restrict allowed paths.`
+          `Use a specific subdirectory to restrict allowed paths.`,
       );
     }
 
-    const rootWithSep = realRoot.endsWith(PATH_SEP) ? realRoot : realRoot + PATH_SEP;
+    const rootWithSep = realRoot.endsWith(PATH_SEP)
+      ? realRoot
+      : realRoot + PATH_SEP;
     if (real !== realRoot && !real.startsWith(rootWithSep)) {
       throw new Error(
         `Refusing upload: path is outside COMET_UPLOAD_ROOT (${realRoot}). ` +
-        `Resolved path: ${real}`
+          `Resolved path: ${real}`,
       );
     }
     return real;
@@ -121,7 +123,7 @@ export function validateUploadPath(filePath: string): string {
     if (real === prefix || real.startsWith(withSep)) {
       throw new Error(
         `Refusing upload from sensitive path: ${real}. ` +
-        `Set COMET_UPLOAD_ROOT to an explicit upload directory if this is intentional.`
+          `Set COMET_UPLOAD_ROOT to an explicit upload directory if this is intentional.`,
       );
     }
   }
@@ -131,13 +133,13 @@ export function validateUploadPath(filePath: string): string {
   if (basename === ".env" || basename.startsWith(".env.")) {
     throw new Error(
       `Refusing upload of environment file: ${real}. ` +
-      `Set COMET_UPLOAD_ROOT to an explicit upload directory if this is intentional.`
+        `Set COMET_UPLOAD_ROOT to an explicit upload directory if this is intentional.`,
     );
   }
 
   console.error(
     `[comet-mcp] WARN: comet_upload received '${real}' without COMET_UPLOAD_ROOT set. ` +
-    `Consider setting the env var to restrict allowed paths.`
+      `Consider setting the env var to restrict allowed paths.`,
   );
   return real;
 }
@@ -182,7 +184,7 @@ export function validateDomain(domain: string): string {
   }
   if (!/^[A-Za-z0-9.\-]+$/.test(domain)) {
     throw new Error(
-      "Invalid domain: only letters, digits, hyphens, and dots are allowed"
+      "Invalid domain: only letters, digits, hyphens, and dots are allowed",
     );
   }
   return domain;

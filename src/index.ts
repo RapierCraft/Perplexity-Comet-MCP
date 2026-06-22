@@ -8,7 +8,11 @@ import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { randomBytes } from "crypto";
-import { validateUploadPath, validateTabId, validateDomain } from "./upload-validator.js";
+import {
+  validateUploadPath,
+  validateTabId,
+  validateDomain,
+} from "./upload-validator.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -795,7 +799,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 validateDomain(domain);
               } catch (e: unknown) {
                 return {
-                  content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }],
+                  content: [
+                    {
+                      type: "text",
+                      text: `Error: ${e instanceof Error ? e.message : String(e)}`,
+                    },
+                  ],
                   isError: true,
                 };
               }
@@ -813,7 +822,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               }
               return {
                 content: [
-                  { type: "text", text: "No tab found for the specified domain" },
+                  {
+                    type: "text",
+                    text: "No tab found for the specified domain",
+                  },
                 ],
                 isError: true,
               };
@@ -869,7 +881,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 validateDomain(domain);
               } catch (e: unknown) {
                 return {
-                  content: [{ type: "text", text: `Error: ${e instanceof Error ? e.message : String(e)}` }],
+                  content: [
+                    {
+                      type: "text",
+                      text: `Error: ${e instanceof Error ? e.message : String(e)}`,
+                    },
+                  ],
                   isError: true,
                 };
               }
@@ -897,7 +914,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
               }
               return {
                 content: [
-                  { type: "text", text: "No tab found for the specified domain" },
+                  {
+                    type: "text",
+                    text: "No tab found for the specified domain",
+                  },
                 ],
                 isError: true,
               };
