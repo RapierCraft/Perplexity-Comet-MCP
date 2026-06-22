@@ -29,6 +29,7 @@ import {
   validateUploadPath,
   validateTabId,
   validateDomain,
+  validateSelector,
 } from "./upload-validator.js";
 
 // ============================================================================
@@ -601,6 +602,17 @@ async function handleUpload(args: {
         success: true,
         content: "No file input elements found on the current page.",
       };
+    }
+  }
+
+  // Defense-in-depth: validate the selector at the handler boundary
+  // before it reaches cdp-client.ts (which also validates). Keeps the
+  // HTTP bridge from forwarding obviously-invalid input any further.
+  if (args.selector !== undefined) {
+    try {
+      validateSelector(args.selector);
+    } catch (e: any) {
+      return { success: false, content: "", error: e.message };
     }
   }
 
