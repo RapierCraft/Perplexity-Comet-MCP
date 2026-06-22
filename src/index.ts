@@ -798,4 +798,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 const transport = new StdioServerTransport();
+
+// A stdio MCP server's lifetime is its client pipe. When the client disconnects
+// (or stdin ends), exit so we don't leak an orphaned, idle process holding a CDP
+// connection. Without this, sessions/stalls accumulate zombie processes.
+let exiting = false;
+const shutdown = (code = 0): void => {
+  if (exiting) return; // idempotent: onclose + stdin close may both fire
+  exiting = true;
+  try {
+    transport.close?.();
+  } catch {
+    // ignore
+  }
+  process.exit(code);
+};
+transport.onclose = () => shutdown(0);
+transport.onerror = (err: unknown) => {
+  console.error(
+    "[comet] transport error:",
+    err instanceof Error ? err.message : err,
+  );
+  shutdown(1);
+};
+// stdin end/close means the client pipe is gone; for a long-lived stdio MCP
+// client this is a disconnect, so we exit. (A client that half-closes stdin
+// while still reading stdout is not the MCP usage pattern here.)
+process.stdin.on("end", () => shutdown(0));
+process.stdin.on("close", () => shutdown(0));
+
 server.connect(transport);
