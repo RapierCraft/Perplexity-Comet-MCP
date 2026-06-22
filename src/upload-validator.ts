@@ -197,7 +197,8 @@ export function validateDomain(domain: string): string {
  *  - Maximum 500 characters — prevents a pathologically long selector from
  *    causing the Comet renderer to spend significant CPU time parsing (DoS).
  *  - Character allowlist covering the full CSS selector grammar: letters,
- *    digits, whitespace, and the punctuation characters used by class (`.`),
+ *    digits, space and tab (the only whitespace valid in CSS selectors), and
+ *    the punctuation characters used by class (`.`),
  *    ID (`#`), attribute (`[`, `]`, `=`, `~`, `^`, `$`, `*`, `|`),
  *    pseudo-class/element (`:`), combinators (`>`, `+`, `~`), grouping (`,`),
  *    quotes (`"`, `'`), parentheses, hyphens, underscores, and at-signs.
@@ -215,9 +216,12 @@ export function validateSelector(selector: string): string {
     throw new Error("Invalid selector: must be 1–500 characters long");
   }
   // Allowlist: CSS selector grammar characters only.
+  // Use explicit [ \t] instead of \s — \s also matches \n, \r, \f, \v which
+  // are not valid in CSS selectors and can corrupt error messages that echo
+  // the selector back to the caller.
   // Excludes: <, >, null bytes, and all other characters not used in CSS selectors.
   if (
-    !/^[A-Za-z0-9\s\.\#\[\]=~^$*|:>+,\"'\(\)\-_\\/@!;{}%&]+$/.test(selector)
+    !/^[A-Za-z0-9 \t\.\#\[\]=~^$*|:>+,\"'\(\)\-_\\/@!;{}%&]+$/.test(selector)
   ) {
     throw new Error(
       "Invalid selector: contains characters not permitted in CSS selectors",
