@@ -4,11 +4,11 @@
 // Claude Code ↔ Perplexity Comet bidirectional interaction
 // Simplified to 6 essential tools
 
-import { readFileSync, existsSync, realpathSync, statSync } from "fs";
+import { readFileSync } from "fs";
 import { fileURLToPath } from "url";
-import { dirname, join, resolve as resolvePath, sep as PATH_SEP } from "path";
-import { homedir } from "os";
+import { dirname, join } from "path";
 import { randomBytes } from "crypto";
+import { validateUploadPath, validateTabId } from "./upload-validator.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -76,87 +76,7 @@ function wrapUntrustedPageContent(text: string | null | undefined): string {
   ].join("\n");
 }
 
-/**
- * Validate a user-supplied upload path against the optional allowlist root
- * (`COMET_UPLOAD_ROOT` env). When the env var is set we resolve symlinks
- * and require the real path to live under the configured root — defends
- * against an LLM-controlled `filePath` exfiltrating arbitrary local files
- * (e.g. `~/.ssh/id_rsa`, `~/.aws/credentials`).
- *
- * When the env var is unset we keep the previous permissive behaviour
- * (backward compatibility) but still block a hardcoded denylist of paths
- * that obviously have no business being uploaded to a webpage.
- *
- * Returns the canonical absolute path, or throws with a user-facing message.
- */
-function validateUploadPath(filePath: string): string {
-  if (!existsSync(filePath)) {
-    throw new Error(`File not found: ${filePath}`);
-  }
-  const real = realpathSync(filePath); // resolve symlinks
-  const stat = statSync(real);
-  if (!stat.isFile()) {
-    throw new Error(`Not a regular file: ${filePath}`);
-  }
-
-  const root = process.env.COMET_UPLOAD_ROOT;
-  if (root) {
-    const realRoot = realpathSync(resolvePath(root));
-    const rootWithSep = realRoot.endsWith(PATH_SEP) ? realRoot : realRoot + PATH_SEP;
-    if (real !== realRoot && !real.startsWith(rootWithSep)) {
-      throw new Error(
-        `Refusing upload: path is outside COMET_UPLOAD_ROOT (${realRoot}). ` +
-        `Resolved path: ${real}`
-      );
-    }
-    return real;
-  }
-
-  // No allowlist configured. Still block obviously-sensitive paths to
-  // make the failure mode at least one step better than "anything goes".
-  const home = homedir();
-  const blockedPrefixes = [
-    resolvePath(home, ".ssh"),
-    resolvePath(home, ".aws"),
-    resolvePath(home, ".config", "gh"),
-    resolvePath(home, ".config", "gcloud"),
-    resolvePath(home, ".gnupg"),
-    resolvePath(home, ".kube"),
-    resolvePath(home, ".docker"),
-    resolvePath(home, "Library", "Keychains"), // macOS
-    "/etc/shadow",
-    "/etc/sudoers",
-    "/root",
-  ];
-  for (const prefix of blockedPrefixes) {
-    const withSep = prefix.endsWith(PATH_SEP) ? prefix : prefix + PATH_SEP;
-    if (real === prefix || real.startsWith(withSep)) {
-      throw new Error(
-        `Refusing upload from sensitive path: ${real}. ` +
-        `Set COMET_UPLOAD_ROOT to an explicit upload directory if this is intentional.`
-      );
-    }
-  }
-
-  console.error(
-    `[comet-mcp] WARN: comet_upload received '${real}' without COMET_UPLOAD_ROOT set. ` +
-    `Consider setting the env var to restrict allowed paths.`
-  );
-  return real;
-}
-
-/**
- * CDP target IDs are 32-char hex strings (typically uppercase). Reject
- * obviously-malformed values before passing to `Target.connect/close`,
- * which otherwise produce cryptic errors and can be tricked into
- * traversing the local HTTP API surface (`/json/version`, etc.).
- */
-function validateTabId(tabId: string): string {
-  if (!/^[A-Fa-f0-9-]{16,64}$/.test(tabId)) {
-    throw new Error(`Invalid tabId format: ${tabId}`);
-  }
-  return tabId;
-}
+// validateUploadPath and validateTabId are imported from ./upload-validator.js
 
 const TOOLS: Tool[] = [
   {
