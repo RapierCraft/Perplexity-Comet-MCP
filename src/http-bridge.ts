@@ -25,6 +25,7 @@ import { timingSafeEqual } from "crypto";
 import { URL } from "url";
 import { cometClient } from "./cdp-client.js";
 import { cometAI } from "./comet-ai.js";
+import { searchYoucom } from "./youcom.js";
 import {
   validateUploadPath,
   validateTabId,
@@ -897,6 +898,10 @@ const server = http.createServer(async (req, res) => {
             name: "comet_upload",
             description: "Upload a file to a file input on the current page",
           },
+          {
+            name: "youcom_search",
+            description: "Optional You.com web search tool",
+          },
         ],
       });
       return;
@@ -976,9 +981,38 @@ async function executeToolByName(
       return handleUpload(
         args as { filePath?: string; selector?: string; checkOnly?: boolean },
       );
+    case "youcom_search":
+      return handleYoucomSearch(args as { query?: string; count?: number; freshness?: string });
     default:
       return { success: false, content: "", error: `Unknown tool: ${name}` };
   }
+}
+
+async function handleYoucomSearch(args: {
+  query?: string;
+  count?: number;
+  freshness?: string;
+}): Promise<ToolResult> {
+  const result = await searchYoucom({
+    query: String(args.query ?? ""),
+    count: typeof args.count === "number" ? args.count : undefined,
+    freshness: typeof args.freshness === "string" ? args.freshness : undefined,
+  });
+
+  if (!result.ok) {
+    return { success: false, content: "", error: result.error.message };
+  }
+
+  const content = result.results.length
+    ? result.results
+        .map(
+          (item, index) =>
+            `${index + 1}. ${item.title}\n${item.url}${item.description ? `\n${item.description}` : ""}`,
+        )
+        .join("\n\n")
+    : "No results found.";
+
+  return { success: true, content: `Query: ${result.query}\n\n${content}` };
 }
 
 // ============================================================================

@@ -23,6 +23,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { cometClient, DEFAULT_PORT } from "./cdp-client.js";
 import { cometAI } from "./comet-ai.js";
+import { searchYoucom } from "./youcom.js";
 import {
   sessionState,
   startNewTask,
@@ -207,6 +208,26 @@ const TOOLS: Tool[] = [
         },
       },
       required: ["filePath"],
+    },
+  },
+  {
+    name: "youcom_search",
+    description:
+      "Run an optional You.com search request for live web results. Set YDC_API_KEY to enable it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query" },
+        count: {
+          type: "number",
+          description: "Number of results to return (default: 10)",
+        },
+        freshness: {
+          type: "string",
+          description: "Optional freshness filter (day, week, month, year)",
+        },
+      },
+      required: ["query"],
     },
   },
 ];
@@ -1183,6 +1204,48 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             isError: true,
           };
         }
+      }
+
+      case "youcom_search": {
+        const result = await searchYoucom({
+          query: String(args?.query ?? ""),
+          count:
+            typeof args?.count === "number" ? args.count : undefined,
+          freshness:
+            typeof args?.freshness === "string"
+              ? args.freshness
+              : undefined,
+        });
+
+        if (!result.ok) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Error: ${result.error.message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        const lines = result.results.length
+          ? result.results
+              .map(
+                (item, index) =>
+                  `${index + 1}. ${item.title}\n${item.url}${item.description ? `\n${item.description}` : ""}`,
+              )
+              .join("\n\n")
+          : "No results found.";
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Query: ${result.query}\n\n${lines}`,
+            },
+          ],
+        };
       }
 
       default:

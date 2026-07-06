@@ -50,7 +50,7 @@ This is a significantly enhanced fork of [hanzili/comet-mcp](https://github.com/
 | Capability | Original | Enhanced |
 |------------|----------|----------|
 | Platform Support | macOS | Windows, WSL, macOS |
-| Available Tools | 6 | 8 (+comet_tabs, +comet_upload) |
+| Available Tools | 6 | 9 (+comet_tabs, +comet_upload, +youcom_search) |
 | Completion Detection | Fixed timeout | Stability-based |
 | Connection Recovery | None | Auto-reconnect with backoff |
 | Tab Management | None | Full registry and control |
@@ -305,6 +305,25 @@ File uploaded successfully: /home/user/doc.pdf
 
 ---
 
+### youcom_search
+
+Optional You.com web search results for live external context. Set `YDC_API_KEY` to enable it.
+
+```
+Parameters:
+  - query (required): Search query
+  - count (optional): Number of results to return
+  - freshness (optional): day, week, month, or year
+```
+
+**Example:**
+
+```
+> youcom_search {"query":"playwright locator best practices","count":5}
+```
+
+---
+
 ## Architecture
 
 ```
@@ -346,6 +365,7 @@ File uploaded successfully: /home/user/doc.pdf
 |----------|-------------|---------|
 | `COMET_PATH` | Custom path to Comet executable | Auto-detected |
 | `COMET_PORT` | CDP debugging port | 9223 |
+| `YDC_API_KEY` | Enables the optional `youcom_search` tool | unset |
 
 ### Custom Comet Path
 
