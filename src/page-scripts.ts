@@ -33,6 +33,35 @@ export interface AgentStatusResult {
   hasStopButton: boolean;
 }
 
+// UI chrome that renders inside `[class*="prose"]`-tagged containers but is
+// never the agent's answer (sidebar labels, nav items, etc). Kept as one
+// list so the "is this really the response" check is identical everywhere
+// it's applied, instead of two call sites drifting apart.
+const PROSE_UI_LABELS = [
+  "Library", "Discover", "Spaces", "Finance", "Account",
+  "Upgrade", "Home", "Search",
+];
+
+/**
+ * True if `el` looks like part of the agent's rendered answer rather than
+ * page chrome. Excludes elements inside nav/aside/header/footer/form regions
+ * and elements whose text is (or starts with) a known UI label. No minimum
+ * length: a genuine short answer ("Yes.", "Paris") must still pass, so the
+ * exclusion has to be about *what* the element is, not how long its text is.
+ */
+function isAnswerProseElement(el: HTMLElement): boolean {
+  if (el.closest("nav, aside, header, footer, form, [contenteditable]")) return false;
+  const text = el.innerText.trim();
+  if (text.length === 0) return false;
+  // Exact match only. A prefix/length-based heuristic ("close enough to the
+  // label") still misclassified genuine short answers that happen to start
+  // with a label word ("Home is where...", "Search..."), which defeats the
+  // whole point of supporting short answers. Nav/sidebar items render as
+  // exactly their label text (a badge count, if any, is a sibling element,
+  // not part of this node's own innerText), so exact match loses nothing.
+  return !PROSE_UI_LABELS.includes(text);
+}
+
 export function extractAgentStatus(): AgentStatusResult {
   const body = document.body.innerText;
 
@@ -43,9 +72,13 @@ export function extractAgentStatus(): AgentStatusResult {
     const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
     const btnText = btn.innerText.toLowerCase();
 
-    // Stop button indicators: square icon (rect), "stop" label, or specific SVG patterns
+    // Stop button indicators: square icon (rect) *without* an unrelated aria-label,
+    // "stop" label, or specific SVG patterns. A bare `<rect>` also matches plenty
+    // of ordinary labeled icon buttons (e.g. Perplexity's "Expand pane" control),
+    // which made hasActiveStopButton true forever and stuck status at "working"
+    // even after the response had fully rendered.
     const isStopButton =
-      rect ||
+      (rect && !ariaLabel) ||
       ariaLabel.includes("stop") ||
       ariaLabel.includes("cancel") ||
       btnText === "stop";
@@ -91,11 +124,7 @@ export function extractAgentStatus(): AgentStatusResult {
 
   // Check for prose content (actual response) - lowered threshold for short answers
   const proseEls = [...document.querySelectorAll('[class*="prose"]')] as HTMLElement[];
-  const hasProseContent = proseEls.some((el) => {
-    const text = el.innerText.trim();
-    // Must have some content, not just UI text (lowered from 50 to 15 for short answers)
-    return text.length > 15 && !text.startsWith("Library") && !text.startsWith("Discover");
-  });
+  const hasProseContent = proseEls.some((el) => isAnswerProseElement(el));
 
   const workingPatterns = [
     "Working", "Searching", "Reviewing sources", "Preparing to assist",
@@ -209,13 +238,7 @@ export function extractAgentStatus(): AgentStatusResult {
     if (!response || response.length < 50) {
       const allProseEls = [...mainContent.querySelectorAll('[class*="prose"]')] as HTMLElement[];
       const validTexts = allProseEls
-        .filter((el) => {
-          if (el.closest("nav, aside, header, footer, form, [contenteditable]")) return false;
-          const text = el.innerText.trim();
-          const isUIText = ["Library", "Discover", "Spaces", "Finance", "Account",
-                            "Upgrade", "Home", "Search"].some((ui) => text.startsWith(ui));
-          return !isUIText && text.length > 30;
-        })
+        .filter((el) => isAnswerProseElement(el))
         .map((el) => el.innerText.trim());
 
       // Combine all valid prose texts, taking the last/most recent ones

@@ -1734,6 +1734,19 @@ export class CometCDPClient {
   }
 
   /**
+   * Type text into whatever element currently has focus, via CDP's Input
+   * domain. Unlike `document.execCommand('insertText', ...)`, this does not
+   * require the browser window to have OS-level focus — the normal state
+   * when Comet is driven by an MCP client rather than a human. Caller is
+   * responsible for focusing (and, for contenteditable, selecting) the
+   * target element first.
+   */
+  async insertText(text: string): Promise<void> {
+    this.ensureConnected();
+    await this.client!.Input.insertText({ text });
+  }
+
+  /**
    * Execute JavaScript with auto-reconnect on connection loss
    */
   async safeEvaluate(expression: string): Promise<EvaluateResult> {

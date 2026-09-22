@@ -167,4 +167,71 @@ describe("extractAgentStatus", () => {
     // currentStep should be the most recently matched step.
     expect(result.currentStep).toMatch(/Searching for|Reading|Navigating/);
   });
+
+  it("returns a short (<15 char) answer as 'completed' with a non-empty response", () => {
+    // Regression test: prose-length thresholds (>15 for detection, >30/>50
+    // for extraction) used to drop genuinely short but complete answers.
+    document.body.innerHTML = `
+      <main>
+        <div>Reviewed 3 sources</div>
+        <div class="prose">Paris</div>
+      </main>
+    `;
+
+    const result = extractAgentStatus();
+    expect(result.status).toBe("completed");
+    expect(result.response).toContain("Paris");
+  });
+
+  it("does not treat a labeled icon button with an SVG <rect> as a stop button", () => {
+    // Regression test: any <button> containing an SVG <rect> used to count
+    // as "stop", so Perplexity's real "Expand pane" button (which has one)
+    // kept status stuck at 'working' forever, even after the answer had
+    // fully rendered.
+    document.body.innerHTML = `
+      <main>
+        <div>Reviewed 3 sources</div>
+        <div class="prose">Paris</div>
+        <button aria-label="Expand pane"><svg><rect width="10" height="10" /></svg></button>
+      </main>
+    `;
+    const btn = document.querySelector("button") as HTMLButtonElement;
+    markVisible(btn);
+
+    const result = extractAgentStatus();
+    expect(result.hasStopButton).toBe(false);
+    expect(result.status).toBe("completed");
+  });
+
+  it("still treats an unlabeled square-icon button (bare <rect>, no aria-label) as a stop button", () => {
+    document.body.innerHTML = `
+      <main>
+        <div class="prose">Working on it</div>
+        <button><svg><rect width="10" height="10" /></svg></button>
+      </main>
+    `;
+    const btn = document.querySelector("button") as HTMLButtonElement;
+    markVisible(btn);
+
+    const result = extractAgentStatus();
+    expect(result.hasStopButton).toBe(true);
+    expect(result.status).toBe("working");
+  });
+
+  it("does not mistake an answer starting with a UI-label word for page chrome", () => {
+    // Regression test: the UI-label exclusion originally used
+    // text.startsWith(label), so a genuine answer beginning with a label
+    // word ("Search results show...") was filtered out as if it were the
+    // "Search" nav item. Only short, label-length-ish text should match.
+    document.body.innerHTML = `
+      <main>
+        <div>Reviewed 3 sources</div>
+        <div class="prose">Search results show three matching vendors in your area, all with same-day availability.</div>
+      </main>
+    `;
+
+    const result = extractAgentStatus();
+    expect(result.status).toBe("completed");
+    expect(result.response).toContain("Search results show three matching vendors");
+  });
 });
