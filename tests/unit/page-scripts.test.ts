@@ -82,6 +82,35 @@ describe("extractAgentStatus", () => {
     expect(result.response.length).toBeGreaterThan(0);
   });
 
+  it("returns 'completed' on the sidecar layout: 'Researched 1s' marker, no steps/sources/follow-up text", () => {
+    document.body.innerHTML = `
+      <main>
+        <div>Researched 1s</div>
+        <div class="prose"><div class="prose">First bullet of the answer.</div><div class="prose">Second bullet.</div></div>
+        <div>Ask anything…</div>
+      </main>
+    `;
+    const result = extractAgentStatus();
+    expect(result.status).toBe("completed");
+    expect(result.response).toContain("First bullet of the answer.");
+  });
+
+  it("does not treat 'Researched' without prose as completed", () => {
+    document.body.innerHTML = `<main><div>Researched 1s</div></main>`;
+    expect(extractAgentStatus().status).toBe("idle");
+  });
+
+  it("ignores an earlier turn's 'Researched' marker while the new turn is still streaming", () => {
+    document.body.innerHTML = `
+      <main>
+        <div>Researched 1s</div>
+        <div class="prose">Old answer to the first question, fully done.</div>
+        <div class="prose">New answer still streaming in right now</div>
+      </main>
+    `;
+    expect(extractAgentStatus().status).not.toBe("completed");
+  });
+
   it("returns 'completed' for Russian singular 'Выполнен 1 шаг'", () => {
     const main = document.createElement("main");
     const m = document.createElement("div");
@@ -144,6 +173,101 @@ describe("extractAgentStatus", () => {
     expect(result.response).not.toContain("Previous turn answer");
   });
 
+  it("returns every bullet when the UI nests one prose block per bullet inside an outer prose block", () => {
+    document.body.innerHTML = `
+      <main>
+        <div class="prose">
+          <div class="prose-p">First bullet text that is long enough.<span>perplexity</span></div>
+          <div class="prose-p">Second bullet text that is long enough.<span>perplexity</span></div>
+          <div class="prose-p">Third bullet text that is long enough.<span>perplexity</span></div>
+          <div class="prose-p">Fourth bullet text that is long enough.<span>perplexity</span></div>
+        </div>
+        <div>1 source</div>
+        <div>Ask a follow-up</div>
+      </main>`;
+
+    const result = extractAgentStatus();
+    expect(result.status).toBe("completed");
+    for (const n of ["First", "Second", "Third", "Fourth"]) {
+      expect(result.response).toContain(`${n} bullet`);
+    }
+  });
+
+  it("returns only the latest turn when earlier turns also use nested prose blocks", () => {
+    document.body.innerHTML = `
+      <main>
+        <div class="prose">
+          <div class="prose-p">Old moon bullet one that is long enough.</div>
+          <div class="prose-p">Old moon bullet two that is long enough.</div>
+        </div>
+        <div class="prose">
+          <div class="prose-p">New Mars bullet one that is long enough.</div>
+          <div class="prose-p">New Mars bullet two that is long enough.</div>
+        </div>
+        <div>Ask a follow-up</div>
+      </main>`;
+
+    const result = extractAgentStatus();
+    expect(result.response).toContain("New Mars bullet one");
+    expect(result.response).toContain("New Mars bullet two");
+    expect(result.response).not.toContain("Old moon");
+  });
+
+  it("ignores a steps-completed marker that belongs to an earlier turn", () => {
+    document.body.innerHTML = `
+      <main>
+        <div>3 steps completed</div>
+        <div class="prose">Old agent answer that is comfortably longer than fifty characters in total.</div>
+        <div class="prose">
+          <div class="prose-p">New Mars bullet one that is long enough.</div>
+          <div class="prose-p">New Mars bullet two that is long enough.</div>
+        </div>
+        <div>Ask a follow-up</div>
+      </main>`;
+
+    const result = extractAgentStatus();
+    expect(result.response).toContain("New Mars bullet two");
+    expect(result.response).not.toContain("Old agent answer");
+  });
+
+  it("returns only the latest single-block answer when an earlier turn left a steps marker", () => {
+    document.body.innerHTML = `
+      <main>
+        <div>3 steps completed</div>
+        <div class="prose">Old agent answer that is comfortably longer than fifty characters in total.</div>
+        <div class="prose">New short answer.</div>
+        <div>Ask a follow-up</div>
+      </main>`;
+
+    const result = extractAgentStatus();
+    expect(result.response).toBe("New short answer.");
+  });
+
+  it("still uses the steps-completed marker for the current turn", () => {
+    document.body.innerHTML = `
+      <main>
+        <div class="prose">Old agent answer that is comfortably longer than fifty characters in total.</div>
+        <div>4 steps completed</div>
+        <div class="prose">New agent answer that is comfortably longer than fifty characters in total.</div>
+        <div>Ask a follow-up</div>
+      </main>`;
+
+    const result = extractAgentStatus();
+    expect(result.response).toContain("New agent answer");
+    expect(result.response).not.toContain("Old agent answer");
+  });
+
+  it("works when stringified and evaluated alone, as it is in the page", () => {
+    document.body.innerHTML = `<main><div class="prose">Paris is the capital of France, a long enough answer.</div><div>Ask a follow-up</div></main>`;
+    const viaString = (0, eval)(`(${extractAgentStatus.toString()})()`);
+    expect(viaString.response).toContain("Paris");
+  });
+
+  it("keeps a legitimate answer of 'Perplexity' while stripping badge labels", () => {
+    document.body.innerHTML = `<main><div class="prose">Perplexity</div><div>Ask a follow-up</div></main>`;
+    expect(extractAgentStatus().response.toLowerCase()).toBe("perplexity");
+  });
+
   it("extracts and dedupes step descriptions matching the working patterns", () => {
     // Pattern matching runs against document.body.innerText.
     // Use one step per <div> so jsdom's innerText emits one per line.
@@ -166,5 +290,72 @@ describe("extractAgentStatus", () => {
     );
     // currentStep should be the most recently matched step.
     expect(result.currentStep).toMatch(/Searching for|Reading|Navigating/);
+  });
+
+  it("returns a short (<15 char) answer as 'completed' with a non-empty response", () => {
+    // Regression test: prose-length thresholds (>15 for detection, >30/>50
+    // for extraction) used to drop genuinely short but complete answers.
+    document.body.innerHTML = `
+      <main>
+        <div>Reviewed 3 sources</div>
+        <div class="prose">Paris</div>
+      </main>
+    `;
+
+    const result = extractAgentStatus();
+    expect(result.status).toBe("completed");
+    expect(result.response).toContain("Paris");
+  });
+
+  it("does not treat a labeled icon button with an SVG <rect> as a stop button", () => {
+    // Regression test: any <button> containing an SVG <rect> used to count
+    // as "stop", so Perplexity's real "Expand pane" button (which has one)
+    // kept status stuck at 'working' forever, even after the answer had
+    // fully rendered.
+    document.body.innerHTML = `
+      <main>
+        <div>Reviewed 3 sources</div>
+        <div class="prose">Paris</div>
+        <button aria-label="Expand pane"><svg><rect width="10" height="10" /></svg></button>
+      </main>
+    `;
+    const btn = document.querySelector("button") as HTMLButtonElement;
+    markVisible(btn);
+
+    const result = extractAgentStatus();
+    expect(result.hasStopButton).toBe(false);
+    expect(result.status).toBe("completed");
+  });
+
+  it("still treats an unlabeled square-icon button (bare <rect>, no aria-label) as a stop button", () => {
+    document.body.innerHTML = `
+      <main>
+        <div class="prose">Working on it</div>
+        <button><svg><rect width="10" height="10" /></svg></button>
+      </main>
+    `;
+    const btn = document.querySelector("button") as HTMLButtonElement;
+    markVisible(btn);
+
+    const result = extractAgentStatus();
+    expect(result.hasStopButton).toBe(true);
+    expect(result.status).toBe("working");
+  });
+
+  it("does not mistake an answer starting with a UI-label word for page chrome", () => {
+    // Regression test: the UI-label exclusion originally used
+    // text.startsWith(label), so a genuine answer beginning with a label
+    // word ("Search results show...") was filtered out as if it were the
+    // "Search" nav item. Only short, label-length-ish text should match.
+    document.body.innerHTML = `
+      <main>
+        <div>Reviewed 3 sources</div>
+        <div class="prose">Search results show three matching vendors in your area, all with same-day availability.</div>
+      </main>
+    `;
+
+    const result = extractAgentStatus();
+    expect(result.status).toBe("completed");
+    expect(result.response).toContain("Search results show three matching vendors");
   });
 });

@@ -619,8 +619,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // keep polling rather than handing back the previous answer.
         const finalStatus = await cometAI.getAgentStatus();
         if (
+          finalStatus.status === "completed" &&
           finalStatus.response &&
-          finalStatus.response.length > 50 &&
+          // Any non-empty response is worth returning here once status is
+          // actually "completed" — this is the last-resort fallback after
+          // the timeout loop already gave the completion conditions above
+          // every chance to fire. Requiring >50 chars meant a short,
+          // complete answer (e.g. "Paris" or "Yes.") that only reached this
+          // branch was discarded entirely and the caller got "still in
+          // progress" instead. The explicit status check (belt-and-braces:
+          // extractAgentStatus only populates `response` when status is
+          // already "completed") guards against ever returning a transient
+          // in-progress string as if it were the final answer.
           finalStatus.response !== oldResponseSnapshot
         ) {
           completeTask(finalStatus.response);

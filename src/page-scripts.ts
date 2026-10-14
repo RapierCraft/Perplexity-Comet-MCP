@@ -34,6 +34,20 @@ export interface AgentStatusResult {
 }
 
 export function extractAgentStatus(): AgentStatusResult {
+  // Helpers live inside the function: it is stringified and evaluated in the
+  // page, so module-level names would be undefined there.
+  const PROSE_UI_LABELS = [
+    "Library", "Discover", "Spaces", "Finance", "Account",
+    "Upgrade", "Home", "Search",
+  ];
+  // True if `el` is part of the agent's answer rather than page chrome. No
+  // minimum length (short answers are valid); exact label match only, since
+  // nav items render as exactly their label text.
+  const isAnswerProseElement = (el: HTMLElement): boolean => {
+    if (el.closest("nav, aside, header, footer, form, [contenteditable]")) return false;
+    const text = el.innerText.trim();
+    return text.length > 0 && !PROSE_UI_LABELS.includes(text);
+  };
   const body = document.body.innerText;
 
   // Check for active stop button (more comprehensive check)
@@ -43,9 +57,13 @@ export function extractAgentStatus(): AgentStatusResult {
     const ariaLabel = (btn.getAttribute("aria-label") || "").toLowerCase();
     const btnText = btn.innerText.toLowerCase();
 
-    // Stop button indicators: square icon (rect), "stop" label, or specific SVG patterns
+    // Stop button indicators: square icon (rect) *without* an unrelated aria-label,
+    // "stop" label, or specific SVG patterns. A bare `<rect>` also matches plenty
+    // of ordinary labeled icon buttons (e.g. Perplexity's "Expand pane" control),
+    // which made hasActiveStopButton true forever and stuck status at "working"
+    // even after the response had fully rendered.
     const isStopButton =
-      rect ||
+      (rect && !ariaLabel) ||
       ariaLabel.includes("stop") ||
       ariaLabel.includes("cancel") ||
       btnText === "stop";
@@ -82,6 +100,20 @@ export function extractAgentStatus(): AgentStatusResult {
   const hasFinishedMarker = /\bFinished\b(?!\s+(?:reading|analyzing|browsing|searching|loading))/i.test(body)
                           && !hasActiveStopButton;
   const hasReviewedSources = /Reviewed \d+ sources?/i.test(body);
+  // Sidecar / newer UI: "Researched 12s" replaces the steps and sources markers.
+  // Only the latest turn's marker counts: an earlier turn's answer block sitting
+  // after the last marker means that marker belongs to a previous turn.
+  const researchedMatches = [...body.matchAll(/\bResearched\s+\d+\s*(?:s|m|sec|min)\b/gi)];
+  const lastResearched = researchedMatches[researchedMatches.length - 1];
+  const answerBlocks = ([...document.querySelectorAll('[class*="prose"]')] as HTMLElement[])
+    .filter((el) => isAnswerProseElement(el))
+    .filter((el, _i, all) => !all.some((o) => o !== el && o.contains(el)));
+  const prevAnswer = answerBlocks.length > 1 ? answerBlocks[answerBlocks.length - 2].innerText.trim().substring(0, 40) : "";
+  // Known limit: before a new turn renders any prose, the page is identical to a
+  // finished single-turn page. comet_ask covers that window with its pre-send
+  // snapshot (stale-answer guard) and the 3-poll stability gate.
+  const hasResearchedMarker = !!lastResearched
+    && !(prevAnswer && body.indexOf(prevAnswer, lastResearched.index ?? 0) !== -1);
   const hasSourcesIndicator = /\d+\s*sources?/i.test(body)              // en
                            || /\d+\s*источник(?:а|ов)?/iu.test(body);    // ru
   const hasAskFollowUp = body.includes("Ask a follow-up")
@@ -91,11 +123,7 @@ export function extractAgentStatus(): AgentStatusResult {
 
   // Check for prose content (actual response) - lowered threshold for short answers
   const proseEls = [...document.querySelectorAll('[class*="prose"]')] as HTMLElement[];
-  const hasProseContent = proseEls.some((el) => {
-    const text = el.innerText.trim();
-    // Must have some content, not just UI text (lowered from 50 to 15 for short answers)
-    return text.length > 15 && !text.startsWith("Library") && !text.startsWith("Discover");
-  });
+  const hasProseContent = proseEls.some((el) => isAnswerProseElement(el));
 
   const workingPatterns = [
     "Working", "Searching", "Reviewing sources", "Preparing to assist",
@@ -124,6 +152,8 @@ export function extractAgentStatus(): AgentStatusResult {
     status = "completed";
   } else if (hasReviewedSources && !hasActiveStopButton) {
     status = "completed";
+  } else if (hasResearchedMarker && hasProseContent) {
+    status = "completed";
   }
   // THIRD: Fall back to working text patterns (only if no completion signals)
   else if (hasWorkingText) {
@@ -147,6 +177,21 @@ export function extractAgentStatus(): AgentStatusResult {
     const mainContent = (document.querySelector("main") || document.body) as HTMLElement;
     const bodyText = mainContent.innerText;
 
+    // A marker is stale when an earlier turn's answer block sits after it: the
+    // marker then belongs to a previous turn, and taking text after it would
+    // return that older answer (plus the new one). Each turn has its own
+    // outermost prose block, so look at the one before the latest.
+    const turnBlocks = ([...mainContent.querySelectorAll('[class*="prose"]')] as HTMLElement[])
+      .filter((el) => isAnswerProseElement(el))
+      .filter((el, _i, all) => !all.some((o) => o !== el && o.contains(el)));
+    const prevBlock = turnBlocks.length > 1 ? turnBlocks[turnBlocks.length - 2].innerText.trim().substring(0, 40) : "";
+    let sawStaleMarker = false;
+    const isStaleMarker = (markerIndex: number) => {
+      const stale = prevBlock.length > 0 && bodyText.indexOf(prevBlock, markerIndex) !== -1;
+      if (stale) sawStaleMarker = true;
+      return stale;
+    };
+
     // Strategy 1: Find content after "X steps completed" marker (agent's final response).
     // In multi-turn chats Perplexity keeps previous-turn markers in the
     // scroll buffer, and the marker text differs across turns ("3 steps
@@ -156,7 +201,7 @@ export function extractAgentStatus(): AgentStatusResult {
     // Walk every match with the /g flag and take the last one.
     const stepsMatches = [...bodyText.matchAll(/(\d+)\s*steps?\s*completed/gi)];
     const stepsMatch = stepsMatches.length > 0 ? stepsMatches[stepsMatches.length - 1] : null;
-    if (stepsMatch) {
+    if (stepsMatch && !isStaleMarker(stepsMatch.index ?? 0)) {
       const markerIndex = stepsMatch.index ?? -1;
       if (markerIndex !== -1) {
         // Get everything after the marker
@@ -187,7 +232,7 @@ export function extractAgentStatus(): AgentStatusResult {
       // Same rationale as Strategy 1: walk every match and take the last.
       const sourcesMatches = [...bodyText.matchAll(/Reviewed\s+\d+\s+sources?/gi)];
       const sourcesMatch = sourcesMatches.length > 0 ? sourcesMatches[sourcesMatches.length - 1] : null;
-      if (sourcesMatch) {
+      if (sourcesMatch && !isStaleMarker(sourcesMatch.index ?? 0)) {
         const markerIndex = sourcesMatch.index ?? -1;
         if (markerIndex !== -1) {
           let afterMarker = bodyText.substring(markerIndex + sourcesMatch[0].length).trim();
@@ -208,15 +253,17 @@ export function extractAgentStatus(): AgentStatusResult {
     // Strategy 3: Fallback - get all prose content combined
     if (!response || response.length < 50) {
       const allProseEls = [...mainContent.querySelectorAll('[class*="prose"]')] as HTMLElement[];
-      const validTexts = allProseEls
-        .filter((el) => {
-          if (el.closest("nav, aside, header, footer, form, [contenteditable]")) return false;
-          const text = el.innerText.trim();
-          const isUIText = ["Library", "Discover", "Spaces", "Finance", "Account",
-                            "Upgrade", "Home", "Search"].some((ui) => text.startsWith(ui));
-          return !isUIText && text.length > 30;
-        })
-        .map((el) => el.innerText.trim());
+      const candidates = allProseEls.filter((el) => isAnswerProseElement(el));
+      // The redesigned UI nests one prose block per bullet/paragraph inside an
+      // outer prose block holding one whole answer. When the newest outermost
+      // block has nested blocks, it is the complete latest answer: use it alone
+      // (earlier turns are separate outer blocks). Otherwise keep the legacy
+      // sibling-block behaviour.
+      const outer = candidates.filter((el) => !candidates.some((o) => o !== el && o.contains(el)));
+      const lastOuter = outer[outer.length - 1];
+      const hasNested = !!lastOuter && candidates.some((o) => o !== lastOuter && lastOuter.contains(o));
+      // A stale marker proves earlier turns are on the page, so never join them in.
+      const validTexts = (hasNested || sawStaleMarker ? [lastOuter] : outer).map((el) => el.innerText.trim());
 
       // Combine all valid prose texts, taking the last/most recent ones
       if (validTexts.length > 0) {
@@ -241,6 +288,9 @@ export function extractAgentStatus(): AgentStatusResult {
         .replace(/^[>›→\s]+/gm, "") // Remove leading arrows
         .replace(/\n{3,}/g, "\n\n") // Collapse multiple newlines
         .trim();
+      // Citation-badge label rendered after each paragraph; keep a bare answer of "Perplexity".
+      const noBadge = response.replace(/^perplexity$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+      if (noBadge) response = noBadge;
     }
   }
 

@@ -67,11 +67,11 @@ export class CometAI {
         const el = document.querySelector(${safeSelector});
         if (!el) return { success: false };
         el.focus();
-        // contenteditable path: execCommand keeps React's input bindings happy.
+        // contenteditable path: select existing content; actual typing
+        // happens afterward via CDP Input.insertText (see below).
         if (el.isContentEditable) {
-          document.execCommand('selectAll', false, null);
-          document.execCommand('insertText', false, ${safePrompt});
-          return { success: true };
+          window.getSelection()?.selectAllChildren(el);
+          return { success: true, contentEditable: true };
         }
         // Form-control path: set value + fire input event.
         if ('value' in el) {
@@ -83,9 +83,21 @@ export class CometAI {
       })()
     `);
 
-    const typed = (result.result.value as { success: boolean })?.success;
-    if (!typed) {
+    const resultValue = result.result.value as { success: boolean; contentEditable?: boolean } | undefined;
+    if (!resultValue?.success) {
       throw new Error("Failed to type into input element");
+    }
+
+    // document.execCommand('insertText') silently no-ops when the browser
+    // window lacks OS-level focus — the normal state for an MCP-driven
+    // browser — yet still reports success, so the failure only surfaced two
+    // steps later as a misleading "Prompt text not found in input" from
+    // submitPrompt's verification. CDP's Input.insertText types into the
+    // focused element regardless of window focus, so use it for the
+    // contenteditable path instead (the form-control `value` assignment
+    // above doesn't depend on window focus and is left as-is).
+    if (resultValue.contentEditable) {
+      await cometClient.insertText(prompt);
     }
 
     // Submit the prompt
@@ -276,6 +288,8 @@ export class CometAI {
   // one; renaming the constant to match what the code actually does.
   private lastResponseText: string = '';
   private stableResponseCount: number = 0;
+  private lastShortResponse: string = '';
+  private shortStableCount: number = 0;
   private readonly STABLE_REPEATS_REQUIRED: number = 2;
 
   /**
@@ -303,6 +317,8 @@ export class CometAI {
   resetStabilityTracking(): void {
     this.lastResponseText = '';
     this.stableResponseCount = 0;
+    this.lastShortResponse = '';
+    this.shortStableCount = 0;
   }
 
   /**
@@ -338,6 +354,19 @@ export class CometAI {
     // If response is stable and has content, override status to completed
     if (isStable && statusResult.response.length > 50 && !statusResult.hasStopButton) {
       statusResult.status = 'completed';
+    }
+    if (statusResult.status === 'completed' && statusResult.response.length > 50 && !isStable) {
+      statusResult.status = 'working';
+    }
+    // Short answers skip the stability tracker (it ignores <=50 chars): require two identical polls.
+    if (statusResult.status === 'completed' && statusResult.response.length <= 50) {
+      if (statusResult.response && statusResult.response === this.lastShortResponse) {
+        this.shortStableCount++;
+      } else {
+        this.lastShortResponse = statusResult.response;
+        this.shortStableCount = 0;
+      }
+      if (this.shortStableCount < 1) statusResult.status = 'working';
     }
 
     return {
